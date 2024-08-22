@@ -1,7 +1,5 @@
-[![Build Status](https://travis-ci.org/valyala/fastjson.svg)](https://travis-ci.org/valyala/fastjson)
-[![GoDoc](https://godoc.org/github.com/wundergraph/astjson?status.svg)](http://godoc.org/github.com/wundergraph/astjson)
-[![Go Report](https://goreportcard.com/badge/github.com/wundergraph/astjson)](https://goreportcard.com/report/github.com/wundergraph/astjson)
-[![codecov](https://codecov.io/gh/valyala/fastjson/branch/master/graph/badge.svg)](https://codecov.io/gh/valyala/fastjson)
+[![Build Status](https://github.com/wundergraph/astjson/actions/workflows/ci.yml/badge.svg)](https://github.com/wundergraph/astjson/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/wundergraph/astjson.svg)](https://pkg.go.dev/github.com/wundergraph/astjson)
 
 # fastjson - fast JSON parser and validator for Go
 
