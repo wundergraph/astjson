@@ -3,7 +3,7 @@ package astjson
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"strings"
 	"testing"
 )
@@ -183,7 +183,7 @@ var (
 )
 
 func getFromFile(filename string) string {
-	data, err := ioutil.ReadFile(filename)
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		panic(fmt.Errorf("cannot read %s: %s", filename, err))
 	}

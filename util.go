@@ -1,7 +1,6 @@
 package astjson
 
 import (
-	"reflect"
 	"unsafe"
 )
 
@@ -10,12 +9,7 @@ func b2s(b []byte) string {
 }
 
 func s2b(s string) (b []byte) {
-	strh := (*reflect.StringHeader)(unsafe.Pointer(&s))
-	sh := (*reflect.SliceHeader)(unsafe.Pointer(&b))
-	sh.Data = strh.Data
-	sh.Len = strh.Len
-	sh.Cap = strh.Len
-	return b
+	return unsafe.Slice(unsafe.StringData(s), len(s))
 }
 
 const maxStartEndStringLen = 80
