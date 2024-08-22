@@ -1,3 +1,3 @@
-module github.com/valyala/fastjson
+module github.com/wundergraph/astjson
 
-go 1.12
+go 1.21

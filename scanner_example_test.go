@@ -1,13 +1,14 @@
-package fastjson_test
+package astjson_test
 
 import (
 	"fmt"
-	"github.com/valyala/fastjson"
 	"log"
+
+	"github.com/wundergraph/astjson"
 )
 
 func ExampleScanner() {
-	var sc fastjson.Scanner
+	var sc astjson.Scanner
 
 	sc.Init(`   {"foo":  "bar"  }[  ]
 		12345"xyz" true false null    `)
@@ -30,7 +31,7 @@ func ExampleScanner() {
 }
 
 func ExampleScanner_reuse() {
-	var sc fastjson.Scanner
+	var sc astjson.Scanner
 
 	// The sc may be re-used in order to reduce the number
 	// of memory allocations.

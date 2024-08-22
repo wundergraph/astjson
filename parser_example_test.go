@@ -1,14 +1,15 @@
-package fastjson_test
+package astjson_test
 
 import (
 	"fmt"
-	"github.com/valyala/fastjson"
 	"log"
 	"strconv"
+
+	"github.com/wundergraph/astjson"
 )
 
 func ExampleParser_Parse() {
-	var p fastjson.Parser
+	var p astjson.Parser
 	v, err := p.Parse(`{"foo":"bar", "baz": 123}`)
 	if err != nil {
 		log.Fatalf("cannot parse json: %s", err)
@@ -21,7 +22,7 @@ func ExampleParser_Parse() {
 }
 
 func ExampleParser_Parse_reuse() {
-	var p fastjson.Parser
+	var p astjson.Parser
 
 	// p may be re-used for parsing multiple json strings.
 	// This improves parsing speed by reducing the number
@@ -61,7 +62,7 @@ func ExampleValue_MarshalTo() {
 			}
 		]
 	}`
-	var p fastjson.Parser
+	var p astjson.Parser
 	v, err := p.Parse(s)
 	if err != nil {
 		log.Fatalf("cannot parse json: %s", err)
@@ -82,7 +83,7 @@ func ExampleValue_MarshalTo() {
 
 func ExampleValue_Get() {
 	s := `{"foo":[{"bar":{"baz":123,"x":"434"},"y":[]},[null, false]],"qwe":true}`
-	var p fastjson.Parser
+	var p astjson.Parser
 	v, err := p.Parse(s)
 	if err != nil {
 		log.Fatalf("cannot parse json: %s", err)
@@ -123,7 +124,7 @@ func ExampleValue_Type() {
 		"null": null
 	}`
 
-	var p fastjson.Parser
+	var p astjson.Parser
 	v, err := p.Parse(s)
 	if err != nil {
 		log.Fatalf("cannot parse json: %s", err)
@@ -154,7 +155,7 @@ func ExampleObject_Visit() {
 		"str": "foobar"
 	}`
 
-	var p fastjson.Parser
+	var p astjson.Parser
 	v, err := p.Parse(s)
 	if err != nil {
 		log.Fatalf("cannot parse json: %s", err)
@@ -164,7 +165,7 @@ func ExampleObject_Visit() {
 		log.Fatalf("cannot obtain object from json value: %s", err)
 	}
 
-	o.Visit(func(k []byte, v *fastjson.Value) {
+	o.Visit(func(k []byte, v *astjson.Value) {
 		switch string(k) {
 		case "obj":
 			fmt.Printf("object %s\n", v)
@@ -187,7 +188,7 @@ func ExampleValue_GetStringBytes() {
 		[123, "baz"]
 	]`
 
-	var p fastjson.Parser
+	var p astjson.Parser
 	v, err := p.Parse(s)
 	if err != nil {
 		log.Fatalf("cannot parse json: %s", err)

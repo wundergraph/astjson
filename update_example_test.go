@@ -1,14 +1,14 @@
-package fastjson_test
+package astjson_test
 
 import (
 	"fmt"
 	"log"
 
-	"github.com/valyala/fastjson"
+	"github.com/wundergraph/astjson"
 )
 
 func ExampleObject_Del() {
-	v := fastjson.MustParse(`{"foo": 123, "bar": [1,2], "baz": "xyz"}`)
+	v := astjson.MustParse(`{"foo": 123, "bar": [1,2], "baz": "xyz"}`)
 	o, err := v.Object()
 	if err != nil {
 		log.Fatalf("cannot otain object: %s", err)
@@ -32,7 +32,7 @@ func ExampleObject_Del() {
 }
 
 func ExampleValue_Del() {
-	v := fastjson.MustParse(`{"foo": 123, "bar": [1,2], "baz": "xyz"}`)
+	v := astjson.MustParse(`{"foo": 123, "bar": [1,2], "baz": "xyz"}`)
 	fmt.Printf("%s\n", v)
 
 	v.Del("foo")
@@ -48,18 +48,18 @@ func ExampleValue_Del() {
 }
 
 func ExampleValue_Set() {
-	v := fastjson.MustParse(`{"foo":1,"bar":[2,3]}`)
+	v := astjson.MustParse(`{"foo":1,"bar":[2,3]}`)
 
 	// Replace `foo` value with "xyz"
-	v.Set("foo", fastjson.MustParse(`"xyz"`))
+	v.Set("foo", astjson.MustParse(`"xyz"`))
 	// Add "newv":123
-	v.Set("newv", fastjson.MustParse(`123`))
+	v.Set("newv", astjson.MustParse(`123`))
 	fmt.Printf("%s\n", v)
 
 	// Replace `bar.1` with {"x":"y"}
-	v.Get("bar").Set("1", fastjson.MustParse(`{"x":"y"}`))
+	v.Get("bar").Set("1", astjson.MustParse(`{"x":"y"}`))
 	// Add `bar.3="qwe"
-	v.Get("bar").Set("3", fastjson.MustParse(`"qwe"`))
+	v.Get("bar").Set("3", astjson.MustParse(`"qwe"`))
 	fmt.Printf("%s\n", v)
 
 	// Output:
