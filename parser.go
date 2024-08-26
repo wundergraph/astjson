@@ -271,6 +271,32 @@ func parseObject(s string, c *cache, depth int) (*Value, string, error) {
 }
 
 func escapeString(dst []byte, s string) []byte {
+	if !hasSpecialChars(s) {
+		// Fast path - nothing to escape.
+		dst = append(dst, '"')
+		dst = append(dst, s...)
+		dst = append(dst, '"')
+		return dst
+	}
+
+	// Slow path.
+	return escapeStringSlowPath(dst, s)
+}
+
+func hasSpecialChars(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '"' || s[i] == '\\' {
+			return true
+		}
+		switch {
+		case s[i] < 0x1a, s[i] < 0x20, s[i] < 0x10, s[i] == 0x0d, s[i] == 0x0c, s[i] == 0x0a, s[i] == 0x09, s[i] < 0x09, s[i] == 0x08:
+			return true
+		}
+	}
+	return false
+}
+
+func escapeStringSlowPath(dst []byte, s string) []byte {
 	dst = append(dst, '"')
 	for i := 0; i < len(s); i++ {
 		c := s[i]
