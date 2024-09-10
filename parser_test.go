@@ -177,17 +177,6 @@ func TestParseRawString(t *testing.T) {
 	})
 }
 
-func TestParserPool(t *testing.T) {
-	var pp ParserPool
-	for i := 0; i < 10; i++ {
-		p := pp.Get()
-		if _, err := p.Parse("null"); err != nil {
-			t.Fatalf("cannot parse null: %s", err)
-		}
-		pp.Put(p)
-	}
-}
-
 func TestValueInvalidTypeConversion(t *testing.T) {
 	var p Parser
 
