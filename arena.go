@@ -57,10 +57,11 @@ func (a *Arena) NewArray() *Value {
 // The returned string is valid until Reset is called on a.
 func (a *Arena) NewString(s string) *Value {
 	v := a.c.getValue()
-	v.t = typeRawString
+	v.t = TypeString
 	bLen := len(a.b)
 	a.b = escapeString(a.b, s)
 	v.s = b2s(a.b[bLen+1 : len(a.b)-1])
+	v.s = unescapeStringBestEffort(v.s)
 	return v
 }
 
@@ -69,10 +70,11 @@ func (a *Arena) NewString(s string) *Value {
 // The returned string is valid until Reset is called on a.
 func (a *Arena) NewStringBytes(b []byte) *Value {
 	v := a.c.getValue()
-	v.t = typeRawString
+	v.t = TypeString
 	bLen := len(a.b)
 	a.b = escapeString(a.b, b2s(b))
 	v.s = b2s(a.b[bLen+1 : len(a.b)-1])
+	v.s = unescapeStringBestEffort(v.s)
 	return v
 }
 
