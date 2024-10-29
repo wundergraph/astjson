@@ -326,7 +326,7 @@ func escapeStringSlowPath(dst []byte, s string) []byte {
 			dst = append(dst, []byte{'\\', 'u', '0', '0', '0', 0x57 + c}...)
 		case c < 0x1a:
 			dst = append(dst, []byte{'\\', 'u', '0', '0', '1', 0x20 + c}...)
-		case c < 0x20:
+		case c < 0x20: // lint:ignore
 			dst = append(dst, []byte{'\\', 'u', '0', '0', '1', 0x47 + c}...)
 		}
 	}
