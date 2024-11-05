@@ -131,8 +131,8 @@ func parseValue(s string, c *cache, depth int) (*Value, string, error) {
 			return nil, tail, fmt.Errorf("cannot parse string: %s", err)
 		}
 		v := c.getValue()
-		v.t = typeRawString
-		v.s = ss
+		v.t = TypeString
+		v.s = unescapeStringBestEffort(ss)
 		return v, tail, nil
 	}
 	if s[0] == 't' {
@@ -326,7 +326,7 @@ func escapeStringSlowPath(dst []byte, s string) []byte {
 			dst = append(dst, []byte{'\\', 'u', '0', '0', '0', 0x57 + c}...)
 		case c < 0x1a:
 			dst = append(dst, []byte{'\\', 'u', '0', '0', '1', 0x20 + c}...)
-		case c < 0x20:
+		case c < 0x20: // lint:ignore
 			dst = append(dst, []byte{'\\', 'u', '0', '0', '1', 0x47 + c}...)
 		}
 	}
@@ -618,11 +618,6 @@ type Value struct {
 // MarshalTo appends marshaled v to dst and returns the result.
 func (v *Value) MarshalTo(dst []byte) []byte {
 	switch v.t {
-	case typeRawString:
-		dst = append(dst, '"')
-		dst = append(dst, v.s...)
-		dst = append(dst, '"')
-		return dst
 	case TypeObject:
 		return v.o.MarshalTo(dst)
 	case TypeArray:
@@ -688,8 +683,6 @@ const (
 
 	// TypeFalse is JSON false.
 	TypeFalse Type = 6
-
-	typeRawString Type = 7
 )
 
 // String returns string representation of t.
@@ -719,10 +712,6 @@ func (t Type) String() string {
 
 // Type returns the type of the v.
 func (v *Value) Type() Type {
-	if v.t == typeRawString {
-		v.s = unescapeStringBestEffort(v.s)
-		v.t = TypeString
-	}
 	return v.t
 }
 
