@@ -18,9 +18,8 @@ import (
 type Parser struct {
 	// b contains working copy of the string to be parsed.
 	b []byte
-
 	// c is a cache for json values.
-	c cache
+	c *cache
 }
 
 // Parse parses s containing JSON.
@@ -31,9 +30,29 @@ type Parser struct {
 func (p *Parser) Parse(s string) (*Value, error) {
 	s = skipWS(s)
 	p.b = append(p.b[:0], s...)
-	p.c.reset()
+	if p.c == nil {
+		p.c = &cache{vs: make([]Value, 4)}
+	} else {
+		p.c.reset()
+	}
 
-	v, tail, err := parseValue(b2s(p.b), &p.c, 0)
+	v, tail, err := parseValue(b2s(p.b), p.c, 0)
+	if err != nil {
+		return nil, fmt.Errorf("cannot parse JSON: %s; unparsed tail: %q", err, startEndString(tail))
+	}
+	tail = skipWS(tail)
+	if len(tail) > 0 {
+		return nil, fmt.Errorf("unexpected tail: %q", startEndString(tail))
+	}
+	return v, nil
+}
+
+func (p *Parser) ParseWithoutCache(s string) (*Value, error) {
+	s = skipWS(s)
+	p.b = append(p.b[:0], s...)
+	p.c = nil
+
+	v, tail, err := parseValue(b2s(p.b), p.c, 0)
 	if err != nil {
 		return nil, fmt.Errorf("cannot parse JSON: %s; unparsed tail: %q", err, startEndString(tail))
 	}
@@ -53,6 +72,10 @@ func (p *Parser) ParseBytes(b []byte) (*Value, error) {
 	return p.Parse(b2s(b))
 }
 
+func (p *Parser) ParseBytesWithoutCache(b []byte) (*Value, error) {
+	return p.ParseWithoutCache(b2s(b))
+}
+
 type cache struct {
 	vs []Value
 }
@@ -62,6 +85,9 @@ func (c *cache) reset() {
 }
 
 func (c *cache) getValue() *Value {
+	if c == nil {
+		return &Value{}
+	}
 	if cap(c.vs) > len(c.vs) {
 		c.vs = c.vs[:len(c.vs)+1]
 	} else {
