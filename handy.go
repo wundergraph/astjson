@@ -137,6 +137,11 @@ func Parse(s string) (*Value, error) {
 	return p.Parse(s)
 }
 
+func ParseWithoutCache(s string) (*Value, error) {
+	var p Parser
+	return p.ParseWithoutCache(s)
+}
+
 // MustParse parses json string s.
 //
 // The function panics if s cannot be parsed.
@@ -155,6 +160,11 @@ func MustParse(s string) *Value {
 func ParseBytes(b []byte) (*Value, error) {
 	var p Parser
 	return p.ParseBytes(b)
+}
+
+func ParseBytesWithoutCache(b []byte) (*Value, error) {
+	var p Parser
+	return p.ParseBytesWithoutCache(b)
 }
 
 // MustParseBytes parses b containing json.
