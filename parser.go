@@ -78,26 +78,80 @@ func (p *Parser) ParseBytesWithoutCache(b []byte) (*Value, error) {
 
 type cache struct {
 	vs []Value
+	nx *cache // next
+	lt *cache // last
 }
 
 func (c *cache) reset() {
 	c.vs = c.vs[:0]
+	c.lt = nil
+	if c.nx != nil {
+		c.nx.reset()
+	}
 }
 
+const (
+	preAllocatedCacheSize = 409 // 32kb class size
+	macAllocatedCacheSize = 1024
+)
+
 func (c *cache) getValue() *Value {
-	if c == nil {
-		return &Value{}
+	var (
+		addNext bool
+		readSrc = c
+	)
+	switch {
+	case cap(c.vs) == 0:
+		// initial state
+		c.vs = make([]Value, 1, preAllocatedCacheSize)
+
+	case c.lt != nil:
+		l := c.lt
+		if cap(l.vs) > len(l.vs) {
+			l.vs = l.vs[:len(l.vs)+1]
+			readSrc = l
+			break
+		}
+		addNext = true
+
+	default:
+		if cap(c.vs) > len(c.vs) {
+			c.vs = c.vs[:len(c.vs)+1]
+			break
+		}
+		addNext = true
 	}
-	if cap(c.vs) > len(c.vs) {
-		c.vs = c.vs[:len(c.vs)+1]
-	} else {
-		if len(c.vs) == 0 {
-			c.vs = make([]Value, 4)
-		} else {
-			c.vs = make([]Value, 1, len(c.vs)*2)
+	if addNext {
+		switch {
+		case c.lt != nil && c.lt.nx != nil:
+			c.lt = c.lt.nx
+			readSrc = c.lt
+			readSrc.vs = readSrc.vs[:1]
+		case c.lt == nil && c.nx != nil:
+			c.lt = c.nx
+			readSrc = c.lt
+			readSrc.vs = readSrc.vs[:1]
+		default:
+			nextSize := len(c.vs)
+			if nextSize*2 < macAllocatedCacheSize {
+				nextSize *= 2
+			} else {
+				nextSize = macAllocatedCacheSize
+			}
+			readSrc = &cache{
+				vs: make([]Value, 1, nextSize),
+			}
+			if c.lt != nil {
+				c.lt.nx = readSrc
+				c.lt = c.lt.nx
+			} else {
+				c.nx = readSrc
+				c.lt = c.nx
+			}
 		}
 	}
-	return &c.vs[len(c.vs)-1]
+	// Do not reset the value, since the caller must properly init it.
+	return &readSrc.vs[len(readSrc.vs)-1]
 }
 
 func skipWS(s string) string {
