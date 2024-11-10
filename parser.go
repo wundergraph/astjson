@@ -96,6 +96,9 @@ const (
 )
 
 func (c *cache) getValue() *Value {
+	if c == nil {
+		return &Value{}
+	}
 	var (
 		addNext bool
 		readSrc = c
