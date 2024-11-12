@@ -566,19 +566,25 @@ func (o *Object) reset() {
 // MarshalTo appends marshaled o to dst and returns the result.
 func (o *Object) MarshalTo(dst []byte) []byte {
 	dst = append(dst, '{')
-	for i, kv := range o.kvs {
-		if o.keysUnescaped {
-			dst = escapeString(dst, kv.k)
-		} else {
-			dst = append(dst, '"')
-			dst = append(dst, kv.k...)
-			dst = append(dst, '"')
+	srcKV := o
+	lastN := o.Len()
+	n := 0
+	for srcKV != nil {
+		for _, kv := range srcKV.kvs {
+			if srcKV.keysUnescaped {
+				dst = escapeString(dst, kv.k)
+			} else {
+				dst = append(dst, '"')
+				dst = append(dst, kv.k...)
+				dst = append(dst, '"')
+			}
+			dst = append(dst, ':')
+			dst = kv.v.MarshalTo(dst)
+			if n++; n != lastN {
+				dst = append(dst, ',')
+			}
 		}
-		dst = append(dst, ':')
-		dst = kv.v.MarshalTo(dst)
-		if i != len(o.kvs)-1 {
-			dst = append(dst, ',')
-		}
+		srcKV = srcKV.nx
 	}
 	dst = append(dst, '}')
 	return dst
