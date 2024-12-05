@@ -108,3 +108,19 @@ func (v *Value) SetArrayItem(idx int, value *Value) {
 	}
 	v.a[idx] = value
 }
+
+// AppendArrayItems appends items from value to the array v.
+func (v *Value) AppendArrayItems(value *Value) {
+	if v == nil || v.t != TypeArray || value == nil || value.t != TypeArray {
+		return
+	}
+	if cap(v.a) < len(v.a)+len(value.a) {
+		a := make([]*Value, len(v.a)+len(value.a))
+		copy(a, v.a)
+		for i := range v.a {
+			v.a[i] = nil
+		}
+		v.a = a[:len(v.a)]
+	}
+	v.a = append(v.a, value.a...)
+}
