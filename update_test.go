@@ -1,7 +1,10 @@
 package astjson
 
 import (
+	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestObjectDelSet(t *testing.T) {
@@ -100,4 +103,50 @@ func TestValueDelSet(t *testing.T) {
 	v.Del("x")
 	v.Set("x", MustParse(`[]`))
 	v.SetArrayItem(1, MustParse(`[]`))
+}
+
+func TestValue_AppendArrayItems(t *testing.T) {
+	left := MustParse(`[1,2,3]`)
+	right := MustParse(`[4,5,6]`)
+	left.AppendArrayItems(right)
+	if len(left.GetArray()) != 6 {
+		t.Fatalf("unexpected length; got %d; want %d", len(left.GetArray()), 6)
+	}
+	out := left.MarshalTo(nil)
+	if string(out) != `[1,2,3,4,5,6]` {
+		t.Fatalf("unexpected output; got %q; want %q", out, `[1,2,3,4,5,6]`)
+	}
+}
+
+func BenchmarkValue_SetArrayItem(b *testing.B) {
+	input := []byte(`1`)
+	leftInput := make([]any, 2)
+	for i := 0; i < 2; i++ {
+		err := json.Unmarshal(input, &leftInput[i])
+		assert.NoError(b, err)
+	}
+	rightInput := make([]any, 1024*1024)
+	for i := 0; i < 1024*1024; i++ {
+		err := json.Unmarshal(input, &rightInput[i])
+		assert.NoError(b, err)
+	}
+
+	left, err := json.Marshal(leftInput)
+	assert.NoError(b, err)
+	right, err := json.Marshal(rightInput)
+	assert.NoError(b, err)
+
+	expectedLen := 2 + 1024*1024
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		l, _ := ParseBytesWithoutCache(left)
+		r, _ := ParseBytesWithoutCache(right)
+		out, _ := MergeValues(l, r)
+		if len(out.GetArray()) != expectedLen {
+			b.Fatalf("unexpected length; got %d; want %d", len(out.GetArray()), expectedLen)
+		}
+	}
 }

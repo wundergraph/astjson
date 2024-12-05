@@ -64,9 +64,13 @@ func MergeValues(a, b *Value) (*Value, bool) {
 	case TypeArray:
 		aa, _ := a.Array()
 		ba, _ := b.Array()
-		for i := 0; i < len(ba); i++ {
-			a.SetArrayItem(len(aa)+i, ba[i])
+		if len(aa) == 0 {
+			return b, true
 		}
+		if len(ba) == 0 {
+			return a, false
+		}
+		a.AppendArrayItems(b)
 		return a, false
 	case TypeFalse:
 		if b.Type() == TypeTrue {
