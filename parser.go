@@ -9,6 +9,25 @@ import (
 	"github.com/wundergraph/astjson/fastfloat"
 )
 
+type ParseError struct {
+	Err error
+}
+
+func (p *ParseError) Error() string {
+	if p == nil {
+		return ""
+	}
+	return p.Err.Error()
+}
+
+func NewParseError(err error) *ParseError {
+	if err == nil {
+		return nil
+	}
+
+	return &ParseError{Err: err}
+}
+
 // Parser parses JSON.
 //
 // Parser may be re-used for subsequent parsing.
@@ -38,11 +57,11 @@ func (p *Parser) Parse(s string) (*Value, error) {
 
 	v, tail, err := parseValue(b2s(p.b), p.c, 0)
 	if err != nil {
-		return nil, fmt.Errorf("cannot parse JSON: %s; unparsed tail: %q", err, startEndString(tail))
+		return nil, NewParseError(fmt.Errorf("cannot parse JSON: %s; unparsed tail: %q", err, startEndString(tail)))
 	}
 	tail = skipWS(tail)
 	if len(tail) > 0 {
-		return nil, fmt.Errorf("unexpected tail: %q", startEndString(tail))
+		return nil, NewParseError(fmt.Errorf("unexpected tail: %q", startEndString(tail)))
 	}
 	return v, nil
 }
@@ -54,11 +73,11 @@ func (p *Parser) ParseWithoutCache(s string) (*Value, error) {
 
 	v, tail, err := parseValue(b2s(p.b), p.c, 0)
 	if err != nil {
-		return nil, fmt.Errorf("cannot parse JSON: %s; unparsed tail: %q", err, startEndString(tail))
+		return nil, NewParseError(fmt.Errorf("cannot parse JSON: %s; unparsed tail: %q", err, startEndString(tail)))
 	}
 	tail = skipWS(tail)
 	if len(tail) > 0 {
-		return nil, fmt.Errorf("unexpected tail: %q", startEndString(tail))
+		return nil, NewParseError(fmt.Errorf("unexpected tail: %q", startEndString(tail)))
 	}
 	return v, nil
 }
