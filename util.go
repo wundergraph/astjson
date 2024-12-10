@@ -42,30 +42,39 @@ func MergeValues(a, b *Value) (*Value, bool) {
 	case TypeObject:
 		ao, _ := a.Object()
 		bo, _ := b.Object()
-		ao.Visit(func(key []byte, l *Value) {
-			sKey := b2s(key)
-			r := bo.Get(sKey)
-			if r == nil {
-				return
+		ao.unescapeKeys()
+		bo.unescapeKeys()
+		for i := range bo.kvs {
+			k := bo.kvs[i].k
+			r := bo.kvs[i].v
+			l := ao.Get(k)
+			if l == nil {
+				ao.Set(k, r)
+				continue
 			}
-			merged, changed := MergeValues(l, r)
+			n, changed := MergeValues(l, r)
 			if changed {
-				ao.Set(b2s(key), merged)
+				ao.Set(k, n)
 			}
-		})
-		bo.Visit(func(key []byte, r *Value) {
-			sKey := b2s(key)
-			if ao.Get(sKey) != nil {
-				return
-			}
-			ao.Set(sKey, r)
-		})
+		}
 		return a, false
 	case TypeArray:
 		aa, _ := a.Array()
 		ba, _ := b.Array()
-		for i := 0; i < len(ba); i++ {
-			a.SetArrayItem(len(aa)+i, ba[i])
+		if len(aa) == 0 {
+			return b, true
+		}
+		if len(ba) == 0 {
+			return a, false
+		}
+		if len(aa) != len(ba) {
+			return b, true
+		}
+		for i := range aa {
+			n, changed := MergeValues(aa[i], ba[i])
+			if changed {
+				aa[i] = n
+			}
 		}
 		return a, false
 	case TypeFalse:
@@ -149,6 +158,13 @@ func ValueIsNonNull(v *Value) bool {
 		return false
 	}
 	return true
+}
+
+func (v *Value) AppendArrayItems(right *Value) {
+	if v.t != TypeArray || right.t != TypeArray {
+		return
+	}
+	v.a = append(v.a, right.a...)
 }
 
 func ValueIsNull(v *Value) bool {
