@@ -46,7 +46,15 @@ func TestMergeValuesArray(t *testing.T) {
 	merged, changed := MergeValues(a, b)
 	require.Equal(t, false, changed)
 	out := merged.MarshalTo(nil)
-	require.Equal(t, `[1,2,3,4]`, string(out))
+	require.Equal(t, `[3,4]`, string(out))
+}
+
+func TestMergeObjectValuesArray(t *testing.T) {
+	a, b := MustParse(`[{"a":1,"b":2},{"x":1}]`), MustParse(`[{"a":2,"b":3,"c":4},{"y":1}]`)
+	merged, changed := MergeValues(a, b)
+	require.Equal(t, false, changed)
+	out := merged.MarshalTo(nil)
+	require.Equal(t, `[{"a":2,"b":3,"c":4},{"x":1,"y":1}]`, string(out))
 }
 
 func TestMergeValuesNestedObjects(t *testing.T) {
