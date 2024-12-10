@@ -164,12 +164,9 @@ func BenchmarkValue_SetArrayItem(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	values := make([]*Value, b.N*2)
-
 	for i := 0; i < b.N; i++ {
 		l, _ := ParseBytesWithoutCache(l)
 		r, _ := ParseBytesWithoutCache(r)
-		values = append(values, l, r)
 		out, _ := MergeValues(l, r)
 		arr := out.GetArray("child", "grand_child", "items")
 		assert.Len(b, arr, 1024*1024)
