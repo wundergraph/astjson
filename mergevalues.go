@@ -24,6 +24,9 @@ func MergeValues(a, b *Value) (v *Value, changed bool, err error) {
 	if a.Type() != b.Type() && !booleans && !oneIsNull {
 		return nil, false, ErrMergeDifferentTypes
 	}
+	if b.Type() == TypeNull && a.Type() != TypeNull {
+		return b, true, nil
+	}
 	switch a.Type() {
 	case TypeObject:
 		ao, _ := a.Object()
