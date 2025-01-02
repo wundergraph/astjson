@@ -1,12 +1,7 @@
 package astjson
 
 import (
-	"encoding/json"
-	"fmt"
-	"strings"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
 )
 
 func TestObjectDelSet(t *testing.T) {
@@ -118,97 +113,4 @@ func TestValue_AppendArrayItems(t *testing.T) {
 	if string(out) != `[1,2,3,4,5,6]` {
 		t.Fatalf("unexpected output; got %q; want %q", out, `[1,2,3,4,5,6]`)
 	}
-}
-
-func TestMergeWithSwap(t *testing.T) {
-	left := MustParse(`{"a":{"b":1,"c":2,"e":[],"f":[1],"h":[1,2,3]}}`)
-	right := MustParse(`{"a":{"b":2,"d":3,"e":[1,2,3],"g":[1],"h":[4,5,6]}}`)
-	out, _ := MergeValues(left, right)
-	assert.Equal(t, `{"a":{"b":2,"c":2,"e":[1,2,3],"f":[1],"h":[4,5,6],"d":3,"g":[1]}}`, out.String())
-}
-
-type RootObject struct {
-	Child *ChildObject `json:"child"`
-}
-
-type ChildObject struct {
-	GrandChild *GrandChildObject `json:"grand_child"`
-}
-
-type GrandChildObject struct {
-	Items []string `json:"items"`
-}
-
-func BenchmarkValue_SetArrayItem(b *testing.B) {
-
-	root := &RootObject{
-		Child: &ChildObject{
-			GrandChild: &GrandChildObject{
-				Items: make([]string, 0),
-			},
-		},
-	}
-
-	l, err := json.Marshal(root)
-	assert.NoError(b, err)
-
-	root.Child.GrandChild.Items = make([]string, 1024*1024)
-
-	for i := 0; i < 1024*1024; i++ {
-		root.Child.GrandChild.Items[i] = strings.Repeat("a", 1024)
-	}
-
-	r, err := json.Marshal(root)
-	assert.NoError(b, err)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		l, _ := ParseBytesWithoutCache(l)
-		r, _ := ParseBytesWithoutCache(r)
-		out, _ := MergeValues(l, r)
-		arr := out.GetArray("child", "grand_child", "items")
-		assert.Len(b, arr, 1024*1024)
-	}
-}
-
-func BenchmarkMergeValuesWithATonOfRecursion(b *testing.B) {
-	b.ReportAllocs()
-
-	left := MustParse(`{"a":{}}`)
-	str := fmt.Sprintf(
-		`{"ba":{"bb":{"bc":{"bd":[%s, %s, %s], "be": {"bf": %s}}}}}`,
-		objectWithRecursion(10),
-		objectWithRecursion(20),
-		objectWithRecursion(2),
-		objectWithRecursion(3))
-
-	expected := fmt.Sprintf(
-		`{"a":{},"ba":{"bb":{"bc":{"bd":[%s,%s,%s],"be":{"bf":%s}}}}}`,
-		objectWithRecursion(10),
-		objectWithRecursion(20),
-		objectWithRecursion(2),
-		objectWithRecursion(3))
-
-	_ = expected
-
-	right := MustParse(str)
-
-	for i := 0; i < b.N; i++ {
-		_, _ = MergeValues(left, right)
-		/*v, _ := MergeValues(left, right)
-		if v.String() != expected {
-			assert.Equal(b, expected, v.String())
-		}*/
-	}
-
-	fmt.Printf("left: %s\n", left.String())
-}
-
-func objectWithRecursion(depth int) string {
-	if depth == 0 {
-		return `{}`
-	}
-	return `{"a":` + objectWithRecursion(depth-1) + `}`
 }

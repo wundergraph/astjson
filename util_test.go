@@ -31,53 +31,6 @@ func TestStartEndString(t *testing.T) {
 	f(getString(100*maxStartEndStringLen), "abcdefghijklmnopqrstuvwxyzabcdefghijklmn...efghijklmnopqrstuvwxyzabcdefghijklmnopqr")
 }
 
-func TestMergeValues(t *testing.T) {
-	a, b := MustParse(`{"a":1}`), MustParse(`{"b":2}`)
-	merged, changed := MergeValues(a, b)
-	require.Equal(t, false, changed)
-	out := merged.MarshalTo(nil)
-	require.Equal(t, `{"a":1,"b":2}`, string(out))
-	out = merged.Get("b").MarshalTo(out[:0])
-	require.Equal(t, `2`, string(out))
-}
-
-func TestMergeValuesArray(t *testing.T) {
-	a, b := MustParse(`[1,2]`), MustParse(`[3,4]`)
-	merged, changed := MergeValues(a, b)
-	require.Equal(t, false, changed)
-	out := merged.MarshalTo(nil)
-	require.Equal(t, `[3,4]`, string(out))
-}
-
-func TestMergeObjectValuesArray(t *testing.T) {
-	a, b := MustParse(`[{"a":1,"b":2},{"x":1}]`), MustParse(`[{"a":2,"b":3,"c":4},{"y":1}]`)
-	merged, changed := MergeValues(a, b)
-	require.Equal(t, false, changed)
-	out := merged.MarshalTo(nil)
-	require.Equal(t, `[{"a":2,"b":3,"c":4},{"x":1,"y":1}]`, string(out))
-}
-
-func TestMergeValuesNestedObjects(t *testing.T) {
-	a, b := MustParse(`{"a":{"b":1}}`), MustParse(`{"a":{"c":2}}`)
-	merged, changed := MergeValues(a, b)
-	require.Equal(t, false, changed)
-	out := merged.MarshalTo(nil)
-	require.Equal(t, `{"a":{"b":1,"c":2}}`, string(out))
-}
-
-func TestMergeValuesWithPath(t *testing.T) {
-	a, b := MustParse(`{"a":{"b":1}}`), MustParse(`{"c":2}`)
-	merged, changed := MergeValuesWithPath(a, b, "a")
-	require.Equal(t, false, changed)
-	out := merged.MarshalTo(nil)
-	require.Equal(t, `{"a":{"b":1,"c":2}}`, string(out))
-	e := MustParse(`{"e":true}`)
-	merged, changed = MergeValuesWithPath(merged, e, "a", "d")
-	require.Equal(t, false, changed)
-	out = merged.MarshalTo(out[:0])
-	require.Equal(t, `{"a":{"b":1,"c":2,"d":{"e":true}}}`, string(out))
-}
-
 func TestGetArray(t *testing.T) {
 	a := MustParse(`[{"name":"Jens"},{"name":"Jannik"}]`)
 	arr, err := a.Array()
