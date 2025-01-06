@@ -18,14 +18,16 @@ func MergeValues(a, b *Value) (v *Value, changed bool, err error) {
 	if b == nil {
 		return a, false, nil
 	}
+	if b.Type() == TypeNull && a.Type() == TypeObject {
+		// we assume that null was returned in an error case for resolving a nested object field
+		// as we've got an object on the left side, we don't override the whole object with null
+		// instead, we keep the left object and discard the null on the right side
+		return a, false, nil
+	}
 	aBool, bBool := a.Type() == TypeTrue || a.Type() == TypeFalse, b.Type() == TypeTrue || b.Type() == TypeFalse
 	booleans := aBool && bBool
-	oneIsNull := a.Type() == TypeNull || b.Type() == TypeNull
-	if a.Type() != b.Type() && !booleans && !oneIsNull {
+	if a.Type() != b.Type() && !booleans {
 		return nil, false, ErrMergeDifferentTypes
-	}
-	if b.Type() == TypeNull && a.Type() != TypeNull {
-		return b, true, nil
 	}
 	switch a.Type() {
 	case TypeObject:
