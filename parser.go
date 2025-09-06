@@ -97,26 +97,55 @@ func (p *Parser) ParseBytesWithoutCache(b []byte) (*Value, error) {
 
 type cache struct {
 	vs []Value
+	nx *cache // next
+	lt *cache // last
 }
 
 func (c *cache) reset() {
 	c.vs = c.vs[:0]
+	c.lt = nil
+	if c.nx != nil {
+		c.nx.reset()
+	}
 }
+
+const (
+	preAllocatedCacheSize = 341   // 32kb class size
+	maxAllocatedCacheSize = 10922 // 1MB
+)
 
 func (c *cache) getValue() *Value {
 	if c == nil {
 		return &Value{}
 	}
-	if cap(c.vs) > len(c.vs) {
-		c.vs = c.vs[:len(c.vs)+1]
-	} else {
-		if len(c.vs) == 0 {
-			c.vs = make([]Value, 4)
-		} else {
-			c.vs = make([]Value, 1, len(c.vs)*2)
-		}
+	readSrc := c
+	if readSrc.lt != nil {
+		readSrc = readSrc.lt
 	}
-	return &c.vs[len(c.vs)-1]
+	switch {
+	case cap(readSrc.vs) == 0:
+		// initial state
+		readSrc.vs = make([]Value, 1, preAllocatedCacheSize)
+
+	case cap(readSrc.vs) > len(readSrc.vs):
+		readSrc.vs = readSrc.vs[:len(readSrc.vs)+1]
+
+	default:
+		if readSrc.nx == nil {
+			nextLen := len(readSrc.vs) * 2
+			if nextLen > maxAllocatedCacheSize {
+				nextLen = maxAllocatedCacheSize
+			}
+			readSrc.nx = &cache{
+				vs: make([]Value, 0, nextLen),
+			}
+		}
+		c.lt = readSrc.nx
+		readSrc = readSrc.nx
+		readSrc.vs = readSrc.vs[:len(readSrc.vs)+1]
+	}
+	// Do not reset the value, since the caller must properly init it.
+	return &readSrc.vs[len(readSrc.vs)-1]
 }
 
 func skipWS(s string) string {
@@ -540,29 +569,41 @@ func parseRawNumber(s string) (string, string, error) {
 type Object struct {
 	kvs           []kv
 	keysUnescaped bool
+	nx            *Object
+	lt            *Object
 }
 
 func (o *Object) reset() {
 	o.kvs = o.kvs[:0]
 	o.keysUnescaped = false
+	o.lt = nil
+	if o.nx != nil {
+		o.nx.reset()
+	}
 }
 
 // MarshalTo appends marshaled o to dst and returns the result.
 func (o *Object) MarshalTo(dst []byte) []byte {
 	dst = append(dst, '{')
-	for i, kv := range o.kvs {
-		if o.keysUnescaped {
-			dst = escapeString(dst, kv.k)
-		} else {
-			dst = append(dst, '"')
-			dst = append(dst, kv.k...)
-			dst = append(dst, '"')
+	srcKV := o
+	lastN := o.Len()
+	n := 0
+	for srcKV != nil {
+		for _, kv := range srcKV.kvs {
+			if srcKV.keysUnescaped {
+				dst = escapeString(dst, kv.k)
+			} else {
+				dst = append(dst, '"')
+				dst = append(dst, kv.k...)
+				dst = append(dst, '"')
+			}
+			dst = append(dst, ':')
+			dst = kv.v.MarshalTo(dst)
+			if n++; n != lastN {
+				dst = append(dst, ',')
+			}
 		}
-		dst = append(dst, ':')
-		dst = kv.v.MarshalTo(dst)
-		if i != len(o.kvs)-1 {
-			dst = append(dst, ',')
-		}
+		srcKV = srcKV.nx
 	}
 	dst = append(dst, '}')
 	return dst
@@ -579,13 +620,45 @@ func (o *Object) String() string {
 	return b2s(b)
 }
 
+const (
+	preAllocatedObjectKVs = 170   // 8kb class
+	maxAllocatedObjectKVS = 21845 // 1MB class
+)
+
 func (o *Object) getKV() *kv {
-	if cap(o.kvs) > len(o.kvs) {
-		o.kvs = o.kvs[:len(o.kvs)+1]
-	} else {
-		o.kvs = append(o.kvs, kv{})
+	kvSrc := o
+	if kvSrc.lt != nil {
+		kvSrc = kvSrc.lt
 	}
-	return &o.kvs[len(o.kvs)-1]
+	switch {
+	case cap(kvSrc.kvs) == 0:
+		// initial state
+		kvSrc.kvs = append(kvSrc.kvs, kv{})
+
+	case cap(kvSrc.kvs) > len(kvSrc.kvs):
+		kvSrc.kvs = kvSrc.kvs[:len(kvSrc.kvs)+1]
+
+	default:
+		if cap(kvSrc.kvs) < preAllocatedObjectKVs {
+			kvSrc.kvs = append(kvSrc.kvs, kv{})
+			break
+		}
+		// new chain
+		if kvSrc.nx == nil {
+			nextLen := len(kvSrc.kvs) * 2
+			if nextLen > maxAllocatedObjectKVS {
+				nextLen = maxAllocatedObjectKVS
+			}
+			kvSrc.nx = &Object{
+				kvs: make([]kv, 0, nextLen),
+			}
+		}
+		kvSrc = kvSrc.nx
+		o.lt = kvSrc
+		kvSrc.kvs = kvSrc.kvs[:len(kvSrc.kvs)+1]
+	}
+
+	return &kvSrc.kvs[len(kvSrc.kvs)-1]
 }
 
 func (o *Object) unescapeKeys() {
@@ -597,12 +670,18 @@ func (o *Object) unescapeKeys() {
 		kv := &kvs[i]
 		kv.k = unescapeStringBestEffort(kv.k)
 	}
+	if o.nx != nil {
+		o.nx.unescapeKeys()
+	}
 	o.keysUnescaped = true
 }
 
 // Len returns the number of items in the o.
 func (o *Object) Len() int {
-	return len(o.kvs)
+	if o.nx == nil {
+		return len(o.kvs)
+	}
+	return len(o.kvs) + o.nx.Len()
 }
 
 // Get returns the value for the given key in the o.
@@ -618,6 +697,11 @@ func (o *Object) Get(key string) *Value {
 				return kv.v
 			}
 		}
+		if o.nx != nil {
+			if v := o.nx.Get(key); v != nil {
+				return v
+			}
+		}
 	}
 
 	// Slow path - unescape object keys.
@@ -628,6 +712,13 @@ func (o *Object) Get(key string) *Value {
 			return kv.v
 		}
 	}
+
+	if o.nx != nil {
+		if v := o.nx.Get(key); v != nil {
+			return v
+		}
+	}
+
 	return nil
 }
 
@@ -644,6 +735,10 @@ func (o *Object) Visit(f func(key []byte, v *Value)) {
 
 	for _, kv := range o.kvs {
 		f(s2b(kv.k), kv.v)
+	}
+
+	if o.nx != nil {
+		o.nx.Visit(f)
 	}
 }
 
