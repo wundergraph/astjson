@@ -1288,3 +1288,27 @@ func TestParseWithoutCache(t *testing.T) {
 		t.Fatalf("unexpected value for key=%q; got %q; want %q", "foo", sb, "bar")
 	}
 }
+
+func TestMarshalTo(t *testing.T) {
+	fileData := getFromFile("testdata/bunchFields.json")
+	var p Parser
+	v, err := p.Parse(fileData)
+	if err != nil {
+		t.Fatalf("cannot parse json: %s", err)
+	}
+	data := make([]byte, 0, len(fileData))
+	data = v.MarshalTo(data)
+	// check
+	var p2 Parser
+	v, err = p2.ParseBytes(data)
+	if err != nil {
+		t.Fatalf("cannot parse json: %s", err)
+	}
+	o, err := v.Object()
+	if err != nil {
+		t.Fatalf("expected object, got: %s", o.String())
+	}
+	if o.Len() != 871 {
+		t.Fatalf("expected 871 fields, got %d", o.Len())
+	}
+}

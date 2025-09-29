@@ -76,6 +76,7 @@ func BenchmarkObjectGet(b *testing.B) {
 }
 
 func benchmarkObjectGet(b *testing.B, itemsCount, lookupsCount int) {
+	var benchPool ParserPool
 	b.StopTimer()
 	var ss []string
 	for i := 0; i < itemsCount; i++ {
@@ -127,10 +128,15 @@ func BenchmarkMarshalTo(b *testing.B) {
 	b.Run("twitter", func(b *testing.B) {
 		benchmarkMarshalTo(b, twitterFixture)
 	})
+	b.Run("20mb", func(b *testing.B) {
+		benchmarkMarshalTo(b, huge20MbFixture)
+	})
 }
 
+var benchPoolMarshalTo ParserPool
+
 func benchmarkMarshalTo(b *testing.B, s string) {
-	p := benchPool.Get()
+	p := benchPoolMarshalTo.Get()
 	v, err := p.Parse(s)
 	if err != nil {
 		panic(fmt.Errorf("unexpected error: %s", err))
@@ -146,7 +152,7 @@ func benchmarkMarshalTo(b *testing.B, s string) {
 			b = v.MarshalTo(b[:0])
 		}
 	})
-	benchPool.Put(p)
+	benchPoolMarshalTo.Put(p)
 }
 
 func BenchmarkParse(b *testing.B) {
@@ -180,6 +186,9 @@ var (
 	canadaFixture  = getFromFile("testdata/canada.json")
 	citmFixture    = getFromFile("testdata/citm_catalog.json")
 	twitterFixture = getFromFile("testdata/twitter.json")
+
+	// 20mb is a huge (stressful) fixture from https://examplefile.com/code/json/20-mb-json
+	huge20MbFixture = getFromFile("testdata/20mb.json")
 )
 
 func getFromFile(filename string) string {
@@ -209,6 +218,7 @@ func benchmarkParse(b *testing.B, s string) {
 }
 
 func benchmarkFastJSONParse(b *testing.B, s string) {
+	var benchPool ParserPool
 	b.ReportAllocs()
 	b.SetBytes(int64(len(s)))
 	b.RunParallel(func(pb *testing.PB) {
@@ -227,6 +237,7 @@ func benchmarkFastJSONParse(b *testing.B, s string) {
 }
 
 func benchmarkFastJSONParseGet(b *testing.B, s string) {
+	var benchPool ParserPool
 	b.ReportAllocs()
 	b.SetBytes(int64(len(s)))
 	b.RunParallel(func(pb *testing.PB) {
@@ -263,8 +274,6 @@ func benchmarkFastJSONParseGet(b *testing.B, s string) {
 		benchPool.Put(p)
 	})
 }
-
-var benchPool ParserPool
 
 func benchmarkStdJSONParseMap(b *testing.B, s string) {
 	b.ReportAllocs()
