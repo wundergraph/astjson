@@ -1,7 +1,5 @@
 package astjson
 
-var handyPool ParserPool
-
 // GetString returns string value for the field identified by keys path
 // in JSON data.
 //
@@ -11,15 +9,13 @@ var handyPool ParserPool
 //
 // Parser is faster for obtaining multiple fields from JSON.
 func GetString(data []byte, keys ...string) string {
-	p := handyPool.Get()
+	var p Parser
 	v, err := p.ParseBytes(data)
 	if err != nil {
-		handyPool.Put(p)
 		return ""
 	}
 	sb := v.GetStringBytes(keys...)
 	str := string(sb)
-	handyPool.Put(p)
 	return str
 }
 
@@ -32,10 +28,9 @@ func GetString(data []byte, keys ...string) string {
 //
 // Parser is faster for obtaining multiple fields from JSON.
 func GetBytes(data []byte, keys ...string) []byte {
-	p := handyPool.Get()
+	var p Parser
 	v, err := p.ParseBytes(data)
 	if err != nil {
-		handyPool.Put(p)
 		return nil
 	}
 	sb := v.GetStringBytes(keys...)
@@ -46,7 +41,6 @@ func GetBytes(data []byte, keys ...string) []byte {
 		b = append(b, sb...)
 	}
 
-	handyPool.Put(p)
 	return b
 }
 
@@ -59,14 +53,12 @@ func GetBytes(data []byte, keys ...string) []byte {
 //
 // Parser is faster for obtaining multiple fields from JSON.
 func GetInt(data []byte, keys ...string) int {
-	p := handyPool.Get()
+	var p Parser
 	v, err := p.ParseBytes(data)
 	if err != nil {
-		handyPool.Put(p)
 		return 0
 	}
 	n := v.GetInt(keys...)
-	handyPool.Put(p)
 	return n
 }
 
@@ -79,14 +71,12 @@ func GetInt(data []byte, keys ...string) int {
 //
 // Parser is faster for obtaining multiple fields from JSON.
 func GetFloat64(data []byte, keys ...string) float64 {
-	p := handyPool.Get()
+	var p Parser
 	v, err := p.ParseBytes(data)
 	if err != nil {
-		handyPool.Put(p)
 		return 0
 	}
 	f := v.GetFloat64(keys...)
-	handyPool.Put(p)
 	return f
 }
 
@@ -99,14 +89,12 @@ func GetFloat64(data []byte, keys ...string) float64 {
 //
 // Parser is faster for obtaining multiple fields from JSON.
 func GetBool(data []byte, keys ...string) bool {
-	p := handyPool.Get()
+	var p Parser
 	v, err := p.ParseBytes(data)
 	if err != nil {
-		handyPool.Put(p)
 		return false
 	}
 	b := v.GetBool(keys...)
-	handyPool.Put(p)
 	return b
 }
 
@@ -118,14 +106,12 @@ func GetBool(data []byte, keys ...string) bool {
 //
 // Parser is faster when multiple fields must be checked in the JSON.
 func Exists(data []byte, keys ...string) bool {
-	p := handyPool.Get()
+	var p Parser
 	v, err := p.ParseBytes(data)
 	if err != nil {
-		handyPool.Put(p)
 		return false
 	}
 	ok := v.Exists(keys...)
-	handyPool.Put(p)
 	return ok
 }
 

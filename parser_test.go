@@ -435,9 +435,9 @@ func TestVisitNil(t *testing.T) {
 }
 
 func TestValueGet(t *testing.T) {
-	var pp ParserPool
 
-	p := pp.Get()
+	var p Parser
+
 	v, err := p.ParseBytes([]byte(`{"xx":33.33,"foo":[123,{"bar":["baz"],"x":"y"}], "": "empty-key", "empty-value": ""}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
@@ -513,8 +513,6 @@ func TestValueGet(t *testing.T) {
 			t.Fatalf("expecting nil value for nonexisting path. Got %#v", vv)
 		}
 	})
-
-	pp.Put(p)
 }
 
 func TestParserParse(t *testing.T) {
