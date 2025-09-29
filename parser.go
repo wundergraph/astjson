@@ -37,8 +37,6 @@ func NewParseError(err error) *ParseError {
 type Parser struct {
 	// b contains working copy of the string to be parsed.
 	b []byte
-	// c is a cache for json values.
-	c *cache
 }
 
 // Parse parses s containing JSON.
@@ -49,13 +47,8 @@ type Parser struct {
 func (p *Parser) Parse(s string) (*Value, error) {
 	s = skipWS(s)
 	p.b = append(p.b[:0], s...)
-	if p.c == nil {
-		p.c = &cache{vs: make([]Value, 4)}
-	} else {
-		p.c.reset()
-	}
 
-	v, tail, err := parseValue(b2s(p.b), p.c, 0)
+	v, tail, err := parseValue(b2s(p.b), 0)
 	if err != nil {
 		return nil, NewParseError(fmt.Errorf("cannot parse JSON: %s; unparsed tail: %q", err, startEndString(tail)))
 	}
@@ -69,9 +62,8 @@ func (p *Parser) Parse(s string) (*Value, error) {
 func (p *Parser) ParseWithoutCache(s string) (*Value, error) {
 	s = skipWS(s)
 	p.b = append(p.b[:0], s...)
-	p.c = nil
 
-	v, tail, err := parseValue(b2s(p.b), p.c, 0)
+	v, tail, err := parseValue(b2s(p.b), 0)
 	if err != nil {
 		return nil, NewParseError(fmt.Errorf("cannot parse JSON: %s; unparsed tail: %q", err, startEndString(tail)))
 	}
@@ -93,59 +85,6 @@ func (p *Parser) ParseBytes(b []byte) (*Value, error) {
 
 func (p *Parser) ParseBytesWithoutCache(b []byte) (*Value, error) {
 	return p.ParseWithoutCache(b2s(b))
-}
-
-type cache struct {
-	vs []Value
-	nx *cache // next
-	lt *cache // last
-}
-
-func (c *cache) reset() {
-	c.vs = c.vs[:0]
-	c.lt = nil
-	if c.nx != nil {
-		c.nx.reset()
-	}
-}
-
-const (
-	preAllocatedCacheSize = 341   // 32kb class size
-	maxAllocatedCacheSize = 10922 // 1MB
-)
-
-func (c *cache) getValue() *Value {
-	if c == nil {
-		return &Value{}
-	}
-	readSrc := c
-	if readSrc.lt != nil {
-		readSrc = readSrc.lt
-	}
-	switch {
-	case cap(readSrc.vs) == 0:
-		// initial state
-		readSrc.vs = make([]Value, 1, preAllocatedCacheSize)
-
-	case cap(readSrc.vs) > len(readSrc.vs):
-		readSrc.vs = readSrc.vs[:len(readSrc.vs)+1]
-
-	default:
-		if readSrc.nx == nil {
-			nextLen := len(readSrc.vs) * 2
-			if nextLen > maxAllocatedCacheSize {
-				nextLen = maxAllocatedCacheSize
-			}
-			readSrc.nx = &cache{
-				vs: make([]Value, 0, nextLen),
-			}
-		}
-		c.lt = readSrc.nx
-		readSrc = readSrc.nx
-		readSrc.vs = readSrc.vs[:len(readSrc.vs)+1]
-	}
-	// Do not reset the value, since the caller must properly init it.
-	return &readSrc.vs[len(readSrc.vs)-1]
 }
 
 func skipWS(s string) string {
@@ -176,7 +115,7 @@ type kv struct {
 // MaxDepth is the maximum depth for nested JSON.
 const MaxDepth = 300
 
-func parseValue(s string, c *cache, depth int) (*Value, string, error) {
+func parseValue(s string, depth int) (*Value, string, error) {
 	if len(s) == 0 {
 		return nil, s, fmt.Errorf("cannot parse empty string")
 	}
@@ -186,14 +125,14 @@ func parseValue(s string, c *cache, depth int) (*Value, string, error) {
 	}
 
 	if s[0] == '{' {
-		v, tail, err := parseObject(s[1:], c, depth)
+		v, tail, err := parseObject(s[1:], depth)
 		if err != nil {
 			return nil, tail, fmt.Errorf("cannot parse object: %s", err)
 		}
 		return v, tail, nil
 	}
 	if s[0] == '[' {
-		v, tail, err := parseArray(s[1:], c, depth)
+		v, tail, err := parseArray(s[1:], depth)
 		if err != nil {
 			return nil, tail, fmt.Errorf("cannot parse array: %s", err)
 		}
@@ -204,7 +143,7 @@ func parseValue(s string, c *cache, depth int) (*Value, string, error) {
 		if err != nil {
 			return nil, tail, fmt.Errorf("cannot parse string: %s", err)
 		}
-		v := c.getValue()
+		v := &Value{}
 		v.t = TypeString
 		v.s = unescapeStringBestEffort(ss)
 		return v, tail, nil
@@ -225,7 +164,7 @@ func parseValue(s string, c *cache, depth int) (*Value, string, error) {
 		if len(s) < len("null") || s[:len("null")] != "null" {
 			// Try parsing NaN
 			if len(s) >= 3 && strings.EqualFold(s[:3], "nan") {
-				v := c.getValue()
+				v := &Value{}
 				v.t = TypeNumber
 				v.s = s[:3]
 				return v, s[3:], nil
@@ -239,26 +178,26 @@ func parseValue(s string, c *cache, depth int) (*Value, string, error) {
 	if err != nil {
 		return nil, tail, fmt.Errorf("cannot parse number: %s", err)
 	}
-	v := c.getValue()
+	v := &Value{}
 	v.t = TypeNumber
 	v.s = ns
 	return v, tail, nil
 }
 
-func parseArray(s string, c *cache, depth int) (*Value, string, error) {
+func parseArray(s string, depth int) (*Value, string, error) {
 	s = skipWS(s)
 	if len(s) == 0 {
 		return nil, s, fmt.Errorf("missing ']'")
 	}
 
 	if s[0] == ']' {
-		v := c.getValue()
+		v := &Value{}
 		v.t = TypeArray
 		v.a = v.a[:0]
 		return v, s[1:], nil
 	}
 
-	a := c.getValue()
+	a := &Value{}
 	a.t = TypeArray
 	a.a = a.a[:0]
 	for {
@@ -266,7 +205,7 @@ func parseArray(s string, c *cache, depth int) (*Value, string, error) {
 		var err error
 
 		s = skipWS(s)
-		v, s, err = parseValue(s, c, depth)
+		v, s, err = parseValue(s, depth)
 		if err != nil {
 			return nil, s, fmt.Errorf("cannot parse array value: %s", err)
 		}
@@ -288,20 +227,20 @@ func parseArray(s string, c *cache, depth int) (*Value, string, error) {
 	}
 }
 
-func parseObject(s string, c *cache, depth int) (*Value, string, error) {
+func parseObject(s string, depth int) (*Value, string, error) {
 	s = skipWS(s)
 	if len(s) == 0 {
 		return nil, s, fmt.Errorf("missing '}'")
 	}
 
 	if s[0] == '}' {
-		v := c.getValue()
+		v := &Value{}
 		v.t = TypeObject
 		v.o.reset()
 		return v, s[1:], nil
 	}
 
-	o := c.getValue()
+	o := &Value{}
 	o.t = TypeObject
 	o.o.reset()
 	for {
@@ -325,7 +264,7 @@ func parseObject(s string, c *cache, depth int) (*Value, string, error) {
 
 		// Parse value
 		s = skipWS(s)
-		kv.v, s, err = parseValue(s, c, depth)
+		kv.v, s, err = parseValue(s, depth)
 		if err != nil {
 			return nil, s, fmt.Errorf("cannot parse object value: %s", err)
 		}

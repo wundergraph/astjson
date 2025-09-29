@@ -25,9 +25,6 @@ type Scanner struct {
 
 	// v contains the last parsed JSON value.
 	v *Value
-
-	// c is used for caching JSON values.
-	c cache
 }
 
 // Init initializes sc with the given s.
@@ -64,8 +61,7 @@ func (sc *Scanner) Next() bool {
 		return false
 	}
 
-	sc.c.reset()
-	v, tail, err := parseValue(sc.s, &sc.c, 0)
+	v, tail, err := parseValue(sc.s, 0)
 	if err != nil {
 		sc.err = err
 		return false
