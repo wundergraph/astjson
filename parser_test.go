@@ -1263,30 +1263,6 @@ func testParseGetSerial(s string) error {
 	return nil
 }
 
-func TestParseBytesWithoutCache(t *testing.T) {
-	var p Parser
-	v, err := p.ParseBytesWithoutCache([]byte(`{"foo": "bar"}`))
-	if err != nil {
-		t.Fatalf("cannot parse json: %s", err)
-	}
-	sb := v.GetStringBytes("foo")
-	if string(sb) != "bar" {
-		t.Fatalf("unexpected value for key=%q; got %q; want %q", "foo", sb, "bar")
-	}
-}
-
-func TestParseWithoutCache(t *testing.T) {
-	var p Parser
-	v, err := p.ParseWithoutCache(`{"foo": "bar"}`)
-	if err != nil {
-		t.Fatalf("cannot parse json: %s", err)
-	}
-	sb := v.GetStringBytes("foo")
-	if string(sb) != "bar" {
-		t.Fatalf("unexpected value for key=%q; got %q; want %q", "foo", sb, "bar")
-	}
-}
-
 func TestMarshalTo(t *testing.T) {
 	fileData := getFromFile("testdata/bunchFields.json")
 	var p Parser

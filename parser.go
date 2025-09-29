@@ -59,21 +59,6 @@ func (p *Parser) Parse(s string) (*Value, error) {
 	return v, nil
 }
 
-func (p *Parser) ParseWithoutCache(s string) (*Value, error) {
-	s = skipWS(s)
-	p.b = append(p.b[:0], s...)
-
-	v, tail, err := parseValue(b2s(p.b), 0)
-	if err != nil {
-		return nil, NewParseError(fmt.Errorf("cannot parse JSON: %s; unparsed tail: %q", err, startEndString(tail)))
-	}
-	tail = skipWS(tail)
-	if len(tail) > 0 {
-		return nil, NewParseError(fmt.Errorf("unexpected tail: %q", startEndString(tail)))
-	}
-	return v, nil
-}
-
 // ParseBytes parses b containing JSON.
 //
 // The returned Value is valid until the next call to Parse*.
@@ -81,10 +66,6 @@ func (p *Parser) ParseWithoutCache(s string) (*Value, error) {
 // Use Scanner if a stream of JSON values must be parsed.
 func (p *Parser) ParseBytes(b []byte) (*Value, error) {
 	return p.Parse(b2s(b))
-}
-
-func (p *Parser) ParseBytesWithoutCache(b []byte) (*Value, error) {
-	return p.ParseWithoutCache(b2s(b))
 }
 
 func skipWS(s string) string {
