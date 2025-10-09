@@ -1,7 +1,6 @@
 package astjson
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
@@ -72,9 +71,6 @@ var (
 	canadaFixture  = getFromFile("testdata/canada.json")
 	citmFixture    = getFromFile("testdata/citm_catalog.json")
 	twitterFixture = getFromFile("testdata/twitter.json")
-
-	// 20mb is a huge (stressful) fixture from https://examplefile.com/code/json/20-mb-json
-	huge20MbFixture = getFromFile("testdata/20mb.json")
 )
 
 func getFromFile(filename string) string {
@@ -83,55 +79,4 @@ func getFromFile(filename string) string {
 		panic(fmt.Errorf("cannot read %s: %s", filename, err))
 	}
 	return string(data)
-}
-
-func benchmarkStdJSONParseMap(b *testing.B, s string) {
-	b.ReportAllocs()
-	b.SetBytes(int64(len(s)))
-	bb := s2b(s)
-	b.RunParallel(func(pb *testing.PB) {
-		var m map[string]interface{}
-		for pb.Next() {
-			if err := json.Unmarshal(bb, &m); err != nil {
-				panic(fmt.Errorf("unexpected error: %s", err))
-			}
-		}
-	})
-}
-
-func benchmarkStdJSONParseStruct(b *testing.B, s string) {
-	b.ReportAllocs()
-	b.SetBytes(int64(len(s)))
-	bb := s2b(s)
-	b.RunParallel(func(pb *testing.PB) {
-		var m struct {
-			Sid            int
-			UUID           string
-			Person         map[string]interface{}
-			Company        map[string]interface{}
-			Users          []interface{}
-			Features       []map[string]interface{}
-			TopicSubTopics map[string]interface{}
-			SearchMetadata map[string]interface{}
-		}
-		for pb.Next() {
-			if err := json.Unmarshal(bb, &m); err != nil {
-				panic(fmt.Errorf("unexpected error: %s", err))
-			}
-		}
-	})
-}
-
-func benchmarkStdJSONParseEmptyStruct(b *testing.B, s string) {
-	b.ReportAllocs()
-	b.SetBytes(int64(len(s)))
-	bb := s2b(s)
-	b.RunParallel(func(pb *testing.PB) {
-		var m struct{}
-		for pb.Next() {
-			if err := json.Unmarshal(bb, &m); err != nil {
-				panic(fmt.Errorf("unexpected error: %s", err))
-			}
-		}
-	})
 }
