@@ -23,6 +23,7 @@ func (o *Object) Del(key string) {
 	}
 
 	// Slow path - unescape object keys before item search.
+	// Note: Passing nil arena is safe - go-arena falls back to heap allocation when arena is nil.
 	o.unescapeKeys(nil)
 
 	for i, kv := range o.kvs {

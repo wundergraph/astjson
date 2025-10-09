@@ -118,3 +118,34 @@ func TestValue_AppendArrayItems(t *testing.T) {
 		t.Fatalf("unexpected output; got %q; want %q", out, `[1,2,3,4,5,6]`)
 	}
 }
+
+func TestObjectDelWithNilArena(t *testing.T) {
+	// Test that Del method works correctly when unescapeKeys is called with nil arena
+	var p Parser
+	v, err := p.Parse(`{"fo\no": "bar", "x": [1,2,3], "escaped\\key": "value"}`)
+	if err != nil {
+		t.Fatalf("unexpected error during parse: %s", err)
+	}
+	o, err := v.Object()
+	if err != nil {
+		t.Fatalf("cannot obtain object: %s", err)
+	}
+
+	// This should trigger the slow path and call unescapeKeys(nil)
+	// The go-arena library should handle nil arena gracefully
+	o.Del("fo\no")
+	if o.Len() != 2 {
+		t.Fatalf("unexpected number of items left; got %d; want %d", o.Len(), 2)
+	}
+
+	// Test with another escaped key
+	o.Del("escaped\\key")
+	if o.Len() != 1 {
+		t.Fatalf("unexpected number of items left; got %d; want %d", o.Len(), 1)
+	}
+
+	// Verify the remaining key
+	if o.Get("x") == nil {
+		t.Fatalf("expected key 'x' to still exist")
+	}
+}
