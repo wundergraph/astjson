@@ -7,6 +7,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/wundergraph/astjson/fastfloat"
+	"github.com/wundergraph/go-arena"
 )
 
 type ParseError struct {
@@ -35,7 +36,6 @@ func NewParseError(err error) *ParseError {
 // Parser cannot be used from concurrent goroutines.
 // Use per-goroutine parsers or ParserPool instead.
 type Parser struct {
-	// b contains working copy of the string to be parsed.
 	b []byte
 }
 
@@ -45,18 +45,13 @@ type Parser struct {
 //
 // Use Scanner if a stream of JSON values must be parsed.
 func (p *Parser) Parse(s string) (*Value, error) {
-	s = skipWS(s)
 	p.b = append(p.b[:0], s...)
+	return p.parse(nil, b2s(p.b))
+}
 
-	v, tail, err := parseValue(b2s(p.b), 0)
-	if err != nil {
-		return nil, NewParseError(fmt.Errorf("cannot parse JSON: %s; unparsed tail: %q", err, startEndString(tail)))
-	}
-	tail = skipWS(tail)
-	if len(tail) > 0 {
-		return nil, NewParseError(fmt.Errorf("unexpected tail: %q", startEndString(tail)))
-	}
-	return v, nil
+func (p *Parser) ParseWithArena(a arena.Arena, s string) (*Value, error) {
+	p.b = append(p.b[:0], s...)
+	return p.parse(a, b2s(p.b))
 }
 
 // ParseBytes parses b containing JSON.
@@ -65,7 +60,25 @@ func (p *Parser) Parse(s string) (*Value, error) {
 //
 // Use Scanner if a stream of JSON values must be parsed.
 func (p *Parser) ParseBytes(b []byte) (*Value, error) {
-	return p.Parse(b2s(b))
+	return p.parse(nil, b2s(b))
+}
+
+func (p *Parser) ParseBytesWithArena(a arena.Arena, b []byte) (*Value, error) {
+	return p.parse(a, b2s(b))
+}
+
+func (p *Parser) parse(a arena.Arena, s string) (*Value, error) {
+	s = skipWS(s)
+
+	v, tail, err := parseValue(a, s, 0)
+	if err != nil {
+		return nil, NewParseError(fmt.Errorf("cannot parse JSON: %s; unparsed tail: %q", err, startEndString(tail)))
+	}
+	tail = skipWS(tail)
+	if len(tail) > 0 {
+		return nil, NewParseError(fmt.Errorf("unexpected tail: %q", startEndString(tail)))
+	}
+	return v, nil
 }
 
 func skipWS(s string) string {
@@ -96,7 +109,7 @@ type kv struct {
 // MaxDepth is the maximum depth for nested JSON.
 const MaxDepth = 300
 
-func parseValue(s string, depth int) (*Value, string, error) {
+func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 	if len(s) == 0 {
 		return nil, s, fmt.Errorf("cannot parse empty string")
 	}
@@ -106,14 +119,14 @@ func parseValue(s string, depth int) (*Value, string, error) {
 	}
 
 	if s[0] == '{' {
-		v, tail, err := parseObject(s[1:], depth)
+		v, tail, err := parseObject(a, s[1:], depth)
 		if err != nil {
 			return nil, tail, fmt.Errorf("cannot parse object: %s", err)
 		}
 		return v, tail, nil
 	}
 	if s[0] == '[' {
-		v, tail, err := parseArray(s[1:], depth)
+		v, tail, err := parseArray(a, s[1:], depth)
 		if err != nil {
 			return nil, tail, fmt.Errorf("cannot parse array: %s", err)
 		}
@@ -124,9 +137,9 @@ func parseValue(s string, depth int) (*Value, string, error) {
 		if err != nil {
 			return nil, tail, fmt.Errorf("cannot parse string: %s", err)
 		}
-		v := &Value{}
+		v := arena.Allocate[Value](a)
 		v.t = TypeString
-		v.s = unescapeStringBestEffort(ss)
+		v.s = unescapeStringBestEffort(a, ss)
 		return v, tail, nil
 	}
 	if s[0] == 't' {
@@ -145,7 +158,7 @@ func parseValue(s string, depth int) (*Value, string, error) {
 		if len(s) < len("null") || s[:len("null")] != "null" {
 			// Try parsing NaN
 			if len(s) >= 3 && strings.EqualFold(s[:3], "nan") {
-				v := &Value{}
+				v := arena.Allocate[Value](a)
 				v.t = TypeNumber
 				v.s = s[:3]
 				return v, s[3:], nil
@@ -159,38 +172,43 @@ func parseValue(s string, depth int) (*Value, string, error) {
 	if err != nil {
 		return nil, tail, fmt.Errorf("cannot parse number: %s", err)
 	}
-	v := &Value{}
+	v := arena.Allocate[Value](a)
 	v.t = TypeNumber
 	v.s = ns
 	return v, tail, nil
 }
 
-func parseArray(s string, depth int) (*Value, string, error) {
+func parseArray(a arena.Arena, s string, depth int) (*Value, string, error) {
 	s = skipWS(s)
 	if len(s) == 0 {
 		return nil, s, fmt.Errorf("missing ']'")
 	}
 
 	if s[0] == ']' {
-		v := &Value{}
+		v := arena.Allocate[Value](a)
 		v.t = TypeArray
 		v.a = v.a[:0]
 		return v, s[1:], nil
 	}
 
-	a := &Value{}
-	a.t = TypeArray
-	a.a = a.a[:0]
+	arr := arena.Allocate[Value](a)
+	arr.t = TypeArray
+	arr.a = arr.a[:0]
 	for {
 		var v *Value
 		var err error
 
 		s = skipWS(s)
-		v, s, err = parseValue(s, depth)
+		v, s, err = parseValue(a, s, depth)
 		if err != nil {
 			return nil, s, fmt.Errorf("cannot parse array value: %s", err)
 		}
-		a.a = append(a.a, v)
+		if arr.a == nil {
+			arr.a = arena.AllocateSlice[*Value](a, 1, 1)
+			arr.a[0] = v
+		} else {
+			arr.a = arena.SliceAppend(a, arr.a, v)
+		}
 
 		s = skipWS(s)
 		if len(s) == 0 {
@@ -202,31 +220,31 @@ func parseArray(s string, depth int) (*Value, string, error) {
 		}
 		if s[0] == ']' {
 			s = s[1:]
-			return a, s, nil
+			return arr, s, nil
 		}
 		return nil, s, fmt.Errorf("missing ',' after array value")
 	}
 }
 
-func parseObject(s string, depth int) (*Value, string, error) {
+func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 	s = skipWS(s)
 	if len(s) == 0 {
 		return nil, s, fmt.Errorf("missing '}'")
 	}
 
 	if s[0] == '}' {
-		v := &Value{}
+		v := arena.Allocate[Value](a)
 		v.t = TypeObject
 		v.o.reset()
 		return v, s[1:], nil
 	}
 
-	o := &Value{}
+	o := arena.Allocate[Value](a)
 	o.t = TypeObject
 	o.o.reset()
 	for {
 		var err error
-		kv := o.o.getKV()
+		kv := o.o.getKV(a)
 
 		// Parse key.
 		s = skipWS(s)
@@ -245,7 +263,7 @@ func parseObject(s string, depth int) (*Value, string, error) {
 
 		// Parse value
 		s = skipWS(s)
-		kv.v, s, err = parseValue(s, depth)
+		kv.v, s, err = parseValue(a, s, depth)
 		if err != nil {
 			return nil, s, fmt.Errorf("cannot parse object value: %s", err)
 		}
@@ -328,82 +346,86 @@ func escapeStringSlowPath(dst []byte, s string) []byte {
 	return dst
 }
 
-func unescapeStringBestEffort(s string) string {
+func unescapeStringBestEffort(a arena.Arena, s string) string {
 	n := strings.IndexByte(s, '\\')
 	if n < 0 {
 		// Fast path - nothing to unescape.
 		return s
 	}
 
-	// Slow path - unescape string.
-	b := s2b(s) // It is safe to do, since s points to a byte slice in Parser.b.
-	b = b[:n]
+	// Estimate capacity to avoid frequent reallocations
+	estimatedCap := len(s) + 4
+	b := arena.AllocateSlice[byte](a, 0, estimatedCap)
+
+	// Add the initial part before the first escape
+	b = arena.SliceAppend(a, b, []byte(s[:n])...)
 	s = s[n+1:]
+
 	for len(s) > 0 {
 		ch := s[0]
 		s = s[1:]
 		switch ch {
 		case '"':
-			b = append(b, '"')
+			b = arena.SliceAppend(a, b, '"')
 		case '\\':
-			b = append(b, '\\')
+			b = arena.SliceAppend(a, b, '\\')
 		case '/':
-			b = append(b, '/')
+			b = arena.SliceAppend(a, b, '/')
 		case 'b':
-			b = append(b, '\b')
+			b = arena.SliceAppend(a, b, '\b')
 		case 'f':
-			b = append(b, '\f')
+			b = arena.SliceAppend(a, b, '\f')
 		case 'n':
-			b = append(b, '\n')
+			b = arena.SliceAppend(a, b, '\n')
 		case 'r':
-			b = append(b, '\r')
+			b = arena.SliceAppend(a, b, '\r')
 		case 't':
-			b = append(b, '\t')
+			b = arena.SliceAppend(a, b, '\t')
 		case 'u':
 			if len(s) < 4 {
 				// Too short escape sequence. Just store it unchanged.
-				b = append(b, "\\u"...)
+				b = arena.SliceAppend(a, b, []byte("\\u")...)
 				break
 			}
 			xs := s[:4]
 			x, err := strconv.ParseUint(xs, 16, 16)
 			if err != nil {
 				// Invalid escape sequence. Just store it unchanged.
-				b = append(b, "\\u"...)
+				b = arena.SliceAppend(a, b, []byte("\\u")...)
 				break
 			}
 			s = s[4:]
 			if !utf16.IsSurrogate(rune(x)) {
-				b = append(b, string(rune(x))...)
+				b = arena.SliceAppend(a, b, []byte(string(rune(x)))...)
 				break
 			}
 
 			// Surrogate.
 			// See https://en.wikipedia.org/wiki/Universal_Character_Set_characters#Surrogates
 			if len(s) < 6 || s[0] != '\\' || s[1] != 'u' {
-				b = append(b, "\\u"...)
-				b = append(b, xs...)
+				b = arena.SliceAppend(a, b, []byte("\\u")...)
+				b = arena.SliceAppend(a, b, []byte(xs)...)
 				break
 			}
 			x1, err := strconv.ParseUint(s[2:6], 16, 16)
 			if err != nil {
-				b = append(b, "\\u"...)
-				b = append(b, xs...)
+				b = arena.SliceAppend(a, b, []byte("\\u")...)
+				b = arena.SliceAppend(a, b, []byte(xs)...)
 				break
 			}
 			r := utf16.DecodeRune(rune(x), rune(x1))
-			b = append(b, string(r)...)
+			b = arena.SliceAppend(a, b, []byte(string(r))...)
 			s = s[6:]
 		default:
 			// Unknown escape sequence. Just store it unchanged.
-			b = append(b, '\\', ch)
+			b = arena.SliceAppend(a, b, '\\', ch)
 		}
 		n = strings.IndexByte(s, '\\')
 		if n < 0 {
-			b = append(b, s...)
+			b = arena.SliceAppend(a, b, []byte(s)...)
 			break
 		}
-		b = append(b, s[:n]...)
+		b = arena.SliceAppend(a, b, []byte(s[:n])...)
 		s = s[n+1:]
 	}
 	return b2s(b)
@@ -487,43 +509,31 @@ func parseRawNumber(s string) (string, string, error) {
 // Object cannot be used from concurrent goroutines.
 // Use per-goroutine parsers or ParserPool instead.
 type Object struct {
-	kvs           []kv
+	kvs           []*kv
 	keysUnescaped bool
-	nx            *Object
-	lt            *Object
 }
 
 func (o *Object) reset() {
 	o.kvs = o.kvs[:0]
 	o.keysUnescaped = false
-	o.lt = nil
-	if o.nx != nil {
-		o.nx.reset()
-	}
 }
 
 // MarshalTo appends marshaled o to dst and returns the result.
 func (o *Object) MarshalTo(dst []byte) []byte {
 	dst = append(dst, '{')
-	srcKV := o
-	lastN := o.Len()
-	n := 0
-	for srcKV != nil {
-		for _, kv := range srcKV.kvs {
-			if srcKV.keysUnescaped {
-				dst = escapeString(dst, kv.k)
-			} else {
-				dst = append(dst, '"')
-				dst = append(dst, kv.k...)
-				dst = append(dst, '"')
-			}
-			dst = append(dst, ':')
-			dst = kv.v.MarshalTo(dst)
-			if n++; n != lastN {
-				dst = append(dst, ',')
-			}
+	for i, kv := range o.kvs {
+		if o.keysUnescaped {
+			dst = escapeString(dst, kv.k)
+		} else {
+			dst = append(dst, '"')
+			dst = append(dst, kv.k...)
+			dst = append(dst, '"')
 		}
-		srcKV = srcKV.nx
+		dst = append(dst, ':')
+		dst = kv.v.MarshalTo(dst)
+		if i != len(o.kvs)-1 {
+			dst = append(dst, ',')
+		}
 	}
 	dst = append(dst, '}')
 	return dst
@@ -540,68 +550,27 @@ func (o *Object) String() string {
 	return b2s(b)
 }
 
-const (
-	preAllocatedObjectKVs = 170   // 8kb class
-	maxAllocatedObjectKVS = 21845 // 1MB class
-)
-
-func (o *Object) getKV() *kv {
-	kvSrc := o
-	if kvSrc.lt != nil {
-		kvSrc = kvSrc.lt
+func (o *Object) getKV(a arena.Arena) *kv {
+	if o.kvs == nil {
+		o.kvs = arena.AllocateSlice[*kv](a, 0, 1)
 	}
-	switch {
-	case cap(kvSrc.kvs) == 0:
-		// initial state
-		kvSrc.kvs = append(kvSrc.kvs, kv{})
-
-	case cap(kvSrc.kvs) > len(kvSrc.kvs):
-		kvSrc.kvs = kvSrc.kvs[:len(kvSrc.kvs)+1]
-
-	default:
-		if cap(kvSrc.kvs) < preAllocatedObjectKVs {
-			kvSrc.kvs = append(kvSrc.kvs, kv{})
-			break
-		}
-		// new chain
-		if kvSrc.nx == nil {
-			nextLen := len(kvSrc.kvs) * 2
-			if nextLen > maxAllocatedObjectKVS {
-				nextLen = maxAllocatedObjectKVS
-			}
-			kvSrc.nx = &Object{
-				kvs: make([]kv, 0, nextLen),
-			}
-		}
-		kvSrc = kvSrc.nx
-		o.lt = kvSrc
-		kvSrc.kvs = kvSrc.kvs[:len(kvSrc.kvs)+1]
-	}
-
-	return &kvSrc.kvs[len(kvSrc.kvs)-1]
+	o.kvs = arena.SliceAppend(a, o.kvs, arena.Allocate[kv](a))
+	return o.kvs[len(o.kvs)-1]
 }
 
-func (o *Object) unescapeKeys() {
+func (o *Object) unescapeKeys(a arena.Arena) {
 	if o.keysUnescaped {
 		return
 	}
-	kvs := o.kvs
-	for i := range kvs {
-		kv := &kvs[i]
-		kv.k = unescapeStringBestEffort(kv.k)
-	}
-	if o.nx != nil {
-		o.nx.unescapeKeys()
+	for i := range o.kvs {
+		o.kvs[i].k = unescapeStringBestEffort(a, o.kvs[i].k)
 	}
 	o.keysUnescaped = true
 }
 
 // Len returns the number of items in the o.
 func (o *Object) Len() int {
-	if o.nx == nil {
-		return len(o.kvs)
-	}
-	return len(o.kvs) + o.nx.Len()
+	return len(o.kvs)
 }
 
 // Get returns the value for the given key in the o.
@@ -610,6 +579,11 @@ func (o *Object) Len() int {
 //
 // The returned value is valid until Parse is called on the Parser returned o.
 func (o *Object) Get(key string) *Value {
+
+	if o == nil {
+		return nil
+	}
+
 	if !o.keysUnescaped && strings.IndexByte(key, '\\') < 0 {
 		// Fast path - try searching for the key without object keys unescaping.
 		for _, kv := range o.kvs {
@@ -617,28 +591,16 @@ func (o *Object) Get(key string) *Value {
 				return kv.v
 			}
 		}
-		if o.nx != nil {
-			if v := o.nx.Get(key); v != nil {
-				return v
-			}
-		}
 	}
 
 	// Slow path - unescape object keys.
-	o.unescapeKeys()
+	o.unescapeKeys(nil)
 
 	for _, kv := range o.kvs {
 		if kv.k == key {
 			return kv.v
 		}
 	}
-
-	if o.nx != nil {
-		if v := o.nx.Get(key); v != nil {
-			return v
-		}
-	}
-
 	return nil
 }
 
@@ -651,14 +613,10 @@ func (o *Object) Visit(f func(key []byte, v *Value)) {
 		return
 	}
 
-	o.unescapeKeys()
+	o.unescapeKeys(nil)
 
 	for _, kv := range o.kvs {
 		f(s2b(kv.k), kv.v)
-	}
-
-	if o.nx != nil {
-		o.nx.Visit(f)
 	}
 }
 

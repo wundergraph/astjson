@@ -3,6 +3,8 @@ package astjson
 import (
 	"strconv"
 	"strings"
+
+	"github.com/wundergraph/go-arena"
 )
 
 // Del deletes the entry with the given key from o.
@@ -21,7 +23,7 @@ func (o *Object) Del(key string) {
 	}
 
 	// Slow path - unescape object keys before item search.
-	o.unescapeKeys()
+	o.unescapeKeys(nil)
 
 	for i, kv := range o.kvs {
 		if kv.k == key {
@@ -52,26 +54,25 @@ func (v *Value) Del(key string) {
 // Set sets (key, value) entry in the o.
 //
 // The value must be unchanged during o lifetime.
-func (o *Object) Set(key string, value *Value) {
+func (o *Object) Set(a arena.Arena, key string, value *Value) {
 	if o == nil {
 		return
 	}
 	if value == nil {
 		value = valueNull
 	}
-	o.unescapeKeys()
+	o.unescapeKeys(a)
 
 	// Try substituting already existing entry with the given key.
 	for i := range o.kvs {
-		kv := &o.kvs[i]
-		if kv.k == key {
-			kv.v = value
+		if o.kvs[i].k == key {
+			o.kvs[i].v = value
 			return
 		}
 	}
 
 	// Add new entry.
-	kv := o.getKV()
+	kv := o.getKV(a)
 	kv.k = key
 	kv.v = value
 }
@@ -79,12 +80,12 @@ func (o *Object) Set(key string, value *Value) {
 // Set sets (key, value) entry in the array or object v.
 //
 // The value must be unchanged during v lifetime.
-func (v *Value) Set(key string, value *Value) {
+func (v *Value) Set(a arena.Arena, key string, value *Value) {
 	if v == nil {
 		return
 	}
 	if v.t == TypeObject {
-		v.o.Set(key, value)
+		v.o.Set(a, key, value)
 		return
 	}
 	if v.t == TypeArray {
@@ -92,19 +93,19 @@ func (v *Value) Set(key string, value *Value) {
 		if err != nil || idx < 0 {
 			return
 		}
-		v.SetArrayItem(idx, value)
+		v.SetArrayItem(a, idx, value)
 	}
 }
 
 // SetArrayItem sets the value in the array v at idx position.
 //
 // The value must be unchanged during v lifetime.
-func (v *Value) SetArrayItem(idx int, value *Value) {
+func (v *Value) SetArrayItem(a arena.Arena, idx int, value *Value) {
 	if v == nil || v.t != TypeArray {
 		return
 	}
 	for idx >= len(v.a) {
-		v.a = append(v.a, valueNull)
+		v.a = arena.SliceAppend(a, v.a, valueNull)
 	}
 	v.a[idx] = value
 }

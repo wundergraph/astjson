@@ -3,6 +3,8 @@ package astjson
 import (
 	"bytes"
 	"errors"
+
+	"github.com/wundergraph/go-arena"
 )
 
 var (
@@ -11,7 +13,7 @@ var (
 	ErrMergeUnknownType           = errors.New("cannot merge unknown type")
 )
 
-func MergeValues(a, b *Value) (v *Value, changed bool, err error) {
+func MergeValues(ar arena.Arena, a, b *Value) (v *Value, changed bool, err error) {
 	if a == nil {
 		return b, true, nil
 	}
@@ -33,22 +35,22 @@ func MergeValues(a, b *Value) (v *Value, changed bool, err error) {
 	case TypeObject:
 		ao, _ := a.Object()
 		bo, _ := b.Object()
-		ao.unescapeKeys()
-		bo.unescapeKeys()
+		ao.unescapeKeys(ar)
+		bo.unescapeKeys(ar)
 		for i := range bo.kvs {
 			k := bo.kvs[i].k
 			r := bo.kvs[i].v
 			l := ao.Get(k)
 			if l == nil {
-				ao.Set(k, r)
+				ao.Set(ar, k, r)
 				continue
 			}
-			n, changed, err := MergeValues(l, r)
+			n, changed, err := MergeValues(ar, l, r)
 			if err != nil {
 				return nil, false, err
 			}
 			if changed {
-				ao.Set(k, n)
+				ao.Set(ar, k, n)
 			}
 		}
 		return a, false, nil
@@ -65,7 +67,7 @@ func MergeValues(a, b *Value) (v *Value, changed bool, err error) {
 			return nil, false, ErrMergeDifferingArrayLengths
 		}
 		for i := range aa {
-			n, changed, err := MergeValues(aa[i], ba[i])
+			n, changed, err := MergeValues(ar, aa[i], ba[i])
 			if err != nil {
 				return nil, false, err
 			}
@@ -108,18 +110,18 @@ func MergeValues(a, b *Value) (v *Value, changed bool, err error) {
 	}
 }
 
-func MergeValuesWithPath(a, b *Value, path ...string) (v *Value, changed bool, err error) {
+func MergeValuesWithPath(ar arena.Arena, a, b *Value, path ...string) (v *Value, changed bool, err error) {
 	if len(path) == 0 {
-		return MergeValues(a, b)
+		return MergeValues(ar, a, b)
 	}
 	root := &Value{
 		t: TypeObject,
 	}
 	current := root
 	for i := 0; i < len(path)-1; i++ {
-		current.Set(path[i], &Value{t: TypeObject})
+		current.Set(ar, path[i], &Value{t: TypeObject})
 		current = current.Get(path[i])
 	}
-	current.Set(path[len(path)-1], b)
-	return MergeValues(a, root)
+	current.Set(ar, path[len(path)-1], b)
+	return MergeValues(ar, a, root)
 }

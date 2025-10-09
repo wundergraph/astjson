@@ -2,11 +2,14 @@ package astjson
 
 import (
 	"testing"
+
+	"github.com/wundergraph/go-arena"
 )
 
 func TestObjectDelSet(t *testing.T) {
 	var p Parser
 	var o *Object
+	a := arena.NewMonotonicArena()
 
 	o.Del("xx")
 
@@ -33,7 +36,7 @@ func TestObjectDelSet(t *testing.T) {
 
 	// Set new value
 	vNew := MustParse(`{"foo":[1,2,3]}`)
-	o.Set("new_key", vNew)
+	o.Set(a, "new_key", vNew)
 
 	// Delete item with escaped key
 	o.Del("fo\no")
@@ -50,11 +53,12 @@ func TestObjectDelSet(t *testing.T) {
 	// Set and Del function as no-op on nil value
 	o = nil
 	o.Del("x")
-	o.Set("x", MustParse(`[3]`))
+	o.Set(a, "x", MustParse(`[3]`))
 }
 
 func TestValueDelSet(t *testing.T) {
 	var p Parser
+	ar := arena.NewMonotonicArena()
 	v, err := p.Parse(`{"xx": 123, "x": [1,2,3]}`)
 	if err != nil {
 		t.Fatalf("unexpected error during parse: %s", err)
@@ -80,14 +84,14 @@ func TestValueDelSet(t *testing.T) {
 
 	// Update the first element in the array
 	vNew := MustParse(`"foobar"`)
-	va.Set("0", vNew)
+	va.Set(ar, "0", vNew)
 
 	// Add third element to the array
 	vNew = MustParse(`[3]`)
-	va.Set("3", vNew)
+	va.Set(ar, "3", vNew)
 
 	// Add invalid array index to the array
-	va.Set("invalid", MustParse(`"nonsense"`))
+	va.Set(ar, "invalid", MustParse(`"nonsense"`))
 
 	str := v.String()
 	strExpected := `{"x":["foobar",3,null,[3]]}`
@@ -98,8 +102,8 @@ func TestValueDelSet(t *testing.T) {
 	// Set and Del function as no-op on nil value
 	v = nil
 	v.Del("x")
-	v.Set("x", MustParse(`[]`))
-	v.SetArrayItem(1, MustParse(`[]`))
+	v.Set(ar, "x", MustParse(`[]`))
+	v.SetArrayItem(ar, 1, MustParse(`[]`))
 }
 
 func TestValue_AppendArrayItems(t *testing.T) {

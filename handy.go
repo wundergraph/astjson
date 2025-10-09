@@ -1,5 +1,9 @@
 package astjson
 
+import (
+	"github.com/wundergraph/go-arena"
+)
+
 // GetString returns string value for the field identified by keys path
 // in JSON data.
 //
@@ -123,6 +127,11 @@ func Parse(s string) (*Value, error) {
 	return p.Parse(s)
 }
 
+func ParseWithArena(a arena.Arena, s string) (*Value, error) {
+	var p Parser
+	return p.ParseWithArena(a, s)
+}
+
 // MustParse parses json string s.
 //
 // The function panics if s cannot be parsed.
@@ -141,6 +150,11 @@ func MustParse(s string) *Value {
 func ParseBytes(b []byte) (*Value, error) {
 	var p Parser
 	return p.ParseBytes(b)
+}
+
+func ParseBytesWithArena(a arena.Arena, b []byte) (*Value, error) {
+	var p Parser
+	return p.ParseBytesWithArena(a, b)
 }
 
 // MustParseBytes parses b containing json.

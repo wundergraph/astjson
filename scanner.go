@@ -61,7 +61,7 @@ func (sc *Scanner) Next() bool {
 		return false
 	}
 
-	v, tail, err := parseValue(sc.s, 0)
+	v, tail, err := parseValue(nil, sc.s, 0)
 	if err != nil {
 		sc.err = err
 		return false
