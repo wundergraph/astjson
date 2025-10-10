@@ -1292,13 +1292,16 @@ func TestMarshalTo(t *testing.T) {
 func BenchmarkParse(b *testing.B) {
 	fileData := getFromFile("testdata/twitter.json")
 	var p Parser
+	out := make([]byte, 0, len(fileData))
 	b.SetBytes(int64(len(fileData)))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := p.Parse(fileData); err != nil {
+		v, err := p.Parse(fileData)
+		if err != nil {
 			b.Fatalf("cannot parse json: %s", err)
 		}
+		out = v.MarshalTo(out[:0])
 	}
 }
 
@@ -1306,13 +1309,16 @@ func BenchmarkParseArena(b *testing.B) {
 	fileData := getFromFile("testdata/twitter.json")
 	var p Parser
 	a := arena.NewMonotonicArena(arena.WithMinBufferSize(1024 * 1024 * 2))
+	out := make([]byte, 0, len(fileData))
 	b.SetBytes(int64(len(fileData)))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := p.ParseWithArena(a, fileData); err != nil {
+		v, err := p.ParseWithArena(a, fileData)
+		if err != nil {
 			b.Fatalf("cannot parse json: %s", err)
 		}
+		out = v.MarshalTo(out[:0])
 		a.Reset()
 	}
 }
