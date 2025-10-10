@@ -32,7 +32,7 @@ func AppendToArray(array, value *Value) {
 		return
 	}
 	items, _ := array.Array()
-	array.SetArrayItem(len(items), value)
+	array.SetArrayItem(nil, len(items), value)
 }
 
 func SetValue(v *Value, value *Value, path ...string) {
@@ -41,11 +41,11 @@ func SetValue(v *Value, value *Value, path ...string) {
 		v = v.Get(path[i])
 		if v == nil {
 			child := MustParse(`{}`)
-			parent.Set(path[i], child)
+			parent.Set(nil, path[i], child)
 			v = child
 		}
 	}
-	v.Set(path[len(path)-1], value)
+	v.Set(nil, path[len(path)-1], value)
 }
 
 func SetNull(v *Value, path ...string) {

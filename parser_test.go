@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wundergraph/go-arena"
 )
 
 func TestParseRawNumber(t *testing.T) {
@@ -95,7 +97,7 @@ func testUnescapeStringBestEffort(t *testing.T, s, expectedS string) {
 	// unescapeString modifies the original s, so call it
 	// on a byte slice copy.
 	b := append([]byte{}, s...)
-	us := unescapeStringBestEffort(b2s(b))
+	us := unescapeStringBestEffort(nil, b2s(b))
 	if us != expectedS {
 		t.Fatalf("unexpected unescaped string; got %q; want %q", us, expectedS)
 	}
@@ -435,9 +437,9 @@ func TestVisitNil(t *testing.T) {
 }
 
 func TestValueGet(t *testing.T) {
-	var pp ParserPool
 
-	p := pp.Get()
+	var p Parser
+
 	v, err := p.ParseBytes([]byte(`{"xx":33.33,"foo":[123,{"bar":["baz"],"x":"y"}], "": "empty-key", "empty-value": ""}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
@@ -513,8 +515,6 @@ func TestValueGet(t *testing.T) {
 			t.Fatalf("expecting nil value for nonexisting path. Got %#v", vv)
 		}
 	})
-
-	pp.Put(p)
 }
 
 func TestParserParse(t *testing.T) {
@@ -1265,30 +1265,6 @@ func testParseGetSerial(s string) error {
 	return nil
 }
 
-func TestParseBytesWithoutCache(t *testing.T) {
-	var p Parser
-	v, err := p.ParseBytesWithoutCache([]byte(`{"foo": "bar"}`))
-	if err != nil {
-		t.Fatalf("cannot parse json: %s", err)
-	}
-	sb := v.GetStringBytes("foo")
-	if string(sb) != "bar" {
-		t.Fatalf("unexpected value for key=%q; got %q; want %q", "foo", sb, "bar")
-	}
-}
-
-func TestParseWithoutCache(t *testing.T) {
-	var p Parser
-	v, err := p.ParseWithoutCache(`{"foo": "bar"}`)
-	if err != nil {
-		t.Fatalf("cannot parse json: %s", err)
-	}
-	sb := v.GetStringBytes("foo")
-	if string(sb) != "bar" {
-		t.Fatalf("unexpected value for key=%q; got %q; want %q", "foo", sb, "bar")
-	}
-}
-
 func TestMarshalTo(t *testing.T) {
 	fileData := getFromFile("testdata/bunchFields.json")
 	var p Parser
@@ -1310,5 +1286,33 @@ func TestMarshalTo(t *testing.T) {
 	}
 	if o.Len() != 871 {
 		t.Fatalf("expected 871 fields, got %d", o.Len())
+	}
+}
+
+func BenchmarkParse(b *testing.B) {
+	fileData := getFromFile("testdata/twitter.json")
+	var p Parser
+	b.SetBytes(int64(len(fileData)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := p.Parse(fileData); err != nil {
+			b.Fatalf("cannot parse json: %s", err)
+		}
+	}
+}
+
+func BenchmarkParseArena(b *testing.B) {
+	fileData := getFromFile("testdata/twitter.json")
+	var p Parser
+	a := arena.NewMonotonicArena(arena.WithMinBufferSize(1024 * 1024 * 2))
+	b.SetBytes(int64(len(fileData)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := p.ParseWithArena(a, fileData); err != nil {
+			b.Fatalf("cannot parse json: %s", err)
+		}
+		a.Reset()
 	}
 }

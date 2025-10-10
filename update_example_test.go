@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"github.com/wundergraph/astjson"
+	"github.com/wundergraph/go-arena"
 )
 
 func ExampleObject_Del() {
@@ -49,17 +50,17 @@ func ExampleValue_Del() {
 
 func ExampleValue_Set() {
 	v := astjson.MustParse(`{"foo":1,"bar":[2,3]}`)
-
+	a := arena.NewMonotonicArena()
 	// Replace `foo` value with "xyz"
-	v.Set("foo", astjson.MustParse(`"xyz"`))
+	v.Set(a, "foo", astjson.MustParse(`"xyz"`))
 	// Add "newv":123
-	v.Set("newv", astjson.MustParse(`123`))
+	v.Set(a, "newv", astjson.MustParse(`123`))
 	fmt.Printf("%s\n", v)
 
 	// Replace `bar.1` with {"x":"y"}
-	v.Get("bar").Set("1", astjson.MustParse(`{"x":"y"}`))
+	v.Get("bar").Set(a, "1", astjson.MustParse(`{"x":"y"}`))
 	// Add `bar.3="qwe"
-	v.Get("bar").Set("3", astjson.MustParse(`"qwe"`))
+	v.Get("bar").Set(a, "3", astjson.MustParse(`"qwe"`))
 	fmt.Printf("%s\n", v)
 
 	// Output:
