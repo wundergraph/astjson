@@ -1323,6 +1323,36 @@ func BenchmarkParseArena(b *testing.B) {
 	}
 }
 
+func BenchmarkParseArenaAndGet(b *testing.B) {
+	fileData := getFromFile("testdata/twitter.json")
+	var p Parser
+	a := arena.NewMonotonicArena(arena.WithMinBufferSize(1024 * 1024 * 2))
+	out := make([]byte, 0, len(fileData))
+	b.SetBytes(int64(len(fileData)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v, err := p.ParseWithArena(a, fileData)
+		if err != nil {
+			b.Fatalf("cannot parse json: %s", err)
+		}
+
+		// Perform several Get operations to simulate typical usage
+		// These keys are chosen to be common in JSON data and don't contain escape sequences
+		_ = v.Get("id")
+		_ = v.Get("text")
+		_ = v.Get("user")
+		_ = v.Get("created_at")
+		_ = v.Get("retweet_count")
+		_ = v.Get("favorite_count")
+		_ = v.Get("lang")
+		_ = v.Get("source")
+
+		out = v.MarshalTo(out[:0])
+		a.Reset()
+	}
+}
+
 // TestParseError tests ParseError functionality
 func TestParseError(t *testing.T) {
 	t.Run("nil error", func(t *testing.T) {
@@ -1624,8 +1654,16 @@ func TestObjectGetEdgeCases(t *testing.T) {
 			t.Errorf("unexpected value: got %q, want %q", value.String(), `value`)
 			return
 		}
-		if !v.o.keysUnescaped {
-			t.Errorf("expected keysUnescaped to be true after Get")
+		// Check that the specific key was unescaped
+		found := false
+		for _, kv := range v.o.kvs {
+			if kv.k == "key\\with\\escapes" && kv.keyUnescaped {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected key to be unescaped after Get")
 			return
 		}
 	})

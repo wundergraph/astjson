@@ -12,21 +12,21 @@ func (o *Object) Del(key string) {
 	if o == nil {
 		return
 	}
-	if !o.keysUnescaped && strings.IndexByte(key, '\\') < 0 {
-		// Fast path - try searching for the key without object keys unescaping.
+	if strings.IndexByte(key, '\\') < 0 {
+		// Fast path - try searching for the key without unescaping
 		for i, kv := range o.kvs {
-			if kv.k == key {
+			if !kv.keyUnescaped && kv.k == key {
 				o.kvs = append(o.kvs[:i], o.kvs[i+1:]...)
 				return
 			}
 		}
 	}
 
-	// Slow path - unescape object keys before item search.
-	// Note: Passing nil arena is safe - go-arena falls back to heap allocation when arena is nil.
-	o.unescapeKeys(nil)
-
+	// Slow path - unescape keys as needed and search
 	for i, kv := range o.kvs {
+		if !kv.keyUnescaped {
+			o.unescapeKey(nil, kv)
+		}
 		if kv.k == key {
 			o.kvs = append(o.kvs[:i], o.kvs[i+1:]...)
 			return
@@ -62,10 +62,12 @@ func (o *Object) Set(a arena.Arena, key string, value *Value) {
 	if value == nil {
 		value = valueNull
 	}
-	o.unescapeKeys(a)
 
 	// Try substituting already existing entry with the given key.
 	for i := range o.kvs {
+		if !o.kvs[i].keyUnescaped {
+			o.unescapeKey(a, o.kvs[i])
+		}
 		if o.kvs[i].k == key {
 			o.kvs[i].v = value
 			return
@@ -76,6 +78,7 @@ func (o *Object) Set(a arena.Arena, key string, value *Value) {
 	kv := o.getKV(a)
 	kv.k = key
 	kv.v = value
+	kv.keyUnescaped = true // New keys are already unescaped since they come from user input
 }
 
 // Set sets (key, value) entry in the array or object v.

@@ -107,9 +107,10 @@ func skipWSSlow(s string) string {
 // kv represents a key-value pair in JSON objects.
 // Cache-friendly layout: hot data first
 type kv struct {
-	k string // 16 bytes
-	v *Value // 8 bytes
-	// Total: 24 bytes - fits in cache line with other data
+	keyUnescaped bool   // 1 byte - tracks if this specific key has been unescaped
+	k            string // 16 bytes
+	v            *Value // 8 bytes
+	// Total: 25 bytes - still fits in cache line
 }
 
 // MaxDepth is the maximum depth for nested JSON.
@@ -525,21 +526,19 @@ func parseRawNumber(s string) (string, string, error) {
 //
 // Cache-friendly layout: hot data first
 type Object struct {
-	kvs           []*kv // HOT: frequently accessed - 24 bytes
-	keysUnescaped bool  // HOT: frequently checked - 1 byte
-	// Total: 25 bytes - compact and cache-friendly
+	kvs []*kv // HOT: frequently accessed - 24 bytes
+	// Total: 24 bytes - compact and cache-friendly
 }
 
 func (o *Object) reset() {
 	o.kvs = o.kvs[:0]
-	o.keysUnescaped = false
 }
 
 // MarshalTo appends marshaled o to dst and returns the result.
 func (o *Object) MarshalTo(dst []byte) []byte {
 	dst = append(dst, '{')
 	for i, kv := range o.kvs {
-		if o.keysUnescaped {
+		if kv.keyUnescaped {
 			dst = escapeString(dst, kv.k)
 		} else {
 			dst = append(dst, '"')
@@ -575,14 +574,13 @@ func (o *Object) getKV(a arena.Arena) *kv {
 	return o.kvs[len(o.kvs)-1]
 }
 
-func (o *Object) unescapeKeys(a arena.Arena) {
-	if o.keysUnescaped {
+// unescapeKey unescapes a specific key if it hasn't been unescaped yet.
+func (o *Object) unescapeKey(a arena.Arena, kv *kv) {
+	if kv.keyUnescaped {
 		return
 	}
-	for i := range o.kvs {
-		o.kvs[i].k = unescapeStringBestEffort(a, o.kvs[i].k)
-	}
-	o.keysUnescaped = true
+	kv.k = unescapeStringBestEffort(a, kv.k)
+	kv.keyUnescaped = true
 }
 
 // Len returns the number of items in the o.
@@ -601,19 +599,20 @@ func (o *Object) Get(key string) *Value {
 		return nil
 	}
 
-	if !o.keysUnescaped && strings.IndexByte(key, '\\') < 0 {
-		// Fast path - try searching for the key without object keys unescaping.
+	// Fast path - try searching for the key without unescaping if the key doesn't contain escapes
+	if strings.IndexByte(key, '\\') < 0 {
 		for _, kv := range o.kvs {
-			if kv.k == key {
+			if !kv.keyUnescaped && kv.k == key {
 				return kv.v
 			}
 		}
 	}
 
-	// Slow path - unescape object keys.
-	o.unescapeKeys(nil)
-
+	// Slow path - unescape keys as needed and search
 	for _, kv := range o.kvs {
+		if !kv.keyUnescaped {
+			o.unescapeKey(nil, kv)
+		}
 		if kv.k == key {
 			return kv.v
 		}
@@ -630,9 +629,10 @@ func (o *Object) Visit(f func(key []byte, v *Value)) {
 		return
 	}
 
-	o.unescapeKeys(nil)
-
 	for _, kv := range o.kvs {
+		if !kv.keyUnescaped {
+			o.unescapeKey(nil, kv)
+		}
 		f(s2b(kv.k), kv.v)
 	}
 }
