@@ -1618,12 +1618,15 @@ func TestObjectGetEdgeCases(t *testing.T) {
 		value := o.Get("key\\with\\escapes")
 		if value == nil {
 			t.Errorf("expected value to be not nil")
+			return
 		}
 		if string(value.GetStringBytes()) != `value` {
 			t.Errorf("unexpected value: got %q, want %q", value.String(), `value`)
+			return
 		}
 		if !v.o.keysUnescaped {
 			t.Errorf("expected keysUnescaped to be true after Get")
+			return
 		}
 	})
 }
