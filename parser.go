@@ -36,7 +36,6 @@ func NewParseError(err error) *ParseError {
 // Parser cannot be used from concurrent goroutines.
 // Use per-goroutine parsers or ParserPool instead.
 type Parser struct {
-	b []byte
 }
 
 // Parse parses s containing JSON.
@@ -45,13 +44,11 @@ type Parser struct {
 //
 // Use Scanner if a stream of JSON values must be parsed.
 func (p *Parser) Parse(s string) (*Value, error) {
-	p.b = append(p.b[:0], s...)
-	return p.parse(nil, b2s(p.b))
+	return p.parse(nil, s)
 }
 
 func (p *Parser) ParseWithArena(a arena.Arena, s string) (*Value, error) {
-	p.b = append(p.b[:0], s...)
-	return p.parse(a, b2s(p.b))
+	return p.parse(a, s)
 }
 
 // ParseBytes parses b containing JSON.
