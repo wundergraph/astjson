@@ -1644,7 +1644,10 @@ func TestTypeStringEdgeCases(t *testing.T) {
 				t.Errorf("expected panic for unknown type")
 			}
 		}()
-		tp.String()
+		s := tp.String()
+		if s != "" {
+			t.Errorf("expected empty string for unknown type, got %q", s)
+		}
 	})
 }
 
