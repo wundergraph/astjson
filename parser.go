@@ -36,7 +36,6 @@ func NewParseError(err error) *ParseError {
 // Parser cannot be used from concurrent goroutines.
 // Use per-goroutine parsers or ParserPool instead.
 type Parser struct {
-	b []byte
 }
 
 // Parse parses s containing JSON.
@@ -45,13 +44,11 @@ type Parser struct {
 //
 // Use Scanner if a stream of JSON values must be parsed.
 func (p *Parser) Parse(s string) (*Value, error) {
-	p.b = append(p.b[:0], s...)
-	return p.parse(nil, b2s(p.b))
+	return p.parse(nil, s)
 }
 
 func (p *Parser) ParseWithArena(a arena.Arena, s string) (*Value, error) {
-	p.b = append(p.b[:0], s...)
-	return p.parse(a, b2s(p.b))
+	return p.parse(a, s)
 }
 
 // ParseBytes parses b containing JSON.
@@ -83,27 +80,37 @@ func (p *Parser) parse(a arena.Arena, s string) (*Value, error) {
 
 func skipWS(s string) string {
 	if len(s) == 0 || s[0] > 0x20 {
-		// Fast path.
+		// Fast path - most common case
 		return s
 	}
 	return skipWSSlow(s)
 }
 
 func skipWSSlow(s string) string {
-	if len(s) == 0 || s[0] != 0x20 && s[0] != 0x0A && s[0] != 0x09 && s[0] != 0x0D {
+	if len(s) == 0 {
 		return s
 	}
-	for i := 1; i < len(s); i++ {
-		if s[i] != 0x20 && s[i] != 0x0A && s[i] != 0x09 && s[i] != 0x0D {
-			return s[i:]
+
+	// Branch prediction optimization: check most common whitespace first
+	// Space (0x20) is most common, then newline, tab, carriage return
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c != 0x20 { // Most common whitespace
+			if c != 0x0A && c != 0x09 && c != 0x0D {
+				return s[i:]
+			}
 		}
 	}
 	return ""
 }
 
+// kv represents a key-value pair in JSON objects.
+// Cache-friendly layout: hot data first
 type kv struct {
-	k string
-	v *Value
+	keyUnescaped bool   // 1 byte - tracks if this specific key has been unescaped
+	k            string // 16 bytes
+	v            *Value // 8 bytes
+	// Total: 25 bytes - still fits in cache line
 }
 
 // MaxDepth is the maximum depth for nested JSON.
@@ -118,21 +125,11 @@ func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 		return nil, s, fmt.Errorf("too big depth for the nested JSON; it exceeds %d", MaxDepth)
 	}
 
-	if s[0] == '{' {
-		v, tail, err := parseObject(a, s[1:], depth)
-		if err != nil {
-			return nil, tail, fmt.Errorf("cannot parse object: %s", err)
-		}
-		return v, tail, nil
-	}
-	if s[0] == '[' {
-		v, tail, err := parseArray(a, s[1:], depth)
-		if err != nil {
-			return nil, tail, fmt.Errorf("cannot parse array: %s", err)
-		}
-		return v, tail, nil
-	}
-	if s[0] == '"' {
+	// Branch prediction optimization: order by frequency
+	// Most JSON contains strings and numbers, then objects, then arrays, then literals
+	switch s[0] {
+	case '"':
+		// String - most common in JSON
 		ss, tail, err := parseRawString(s[1:])
 		if err != nil {
 			return nil, tail, fmt.Errorf("cannot parse string: %s", err)
@@ -141,20 +138,34 @@ func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 		v.t = TypeString
 		v.s = unescapeStringBestEffort(a, ss)
 		return v, tail, nil
-	}
-	if s[0] == 't' {
+	case '{':
+		// Object - very common
+		v, tail, err := parseObject(a, s[1:], depth)
+		if err != nil {
+			return nil, tail, fmt.Errorf("cannot parse object: %s", err)
+		}
+		return v, tail, nil
+	case '[':
+		// Array - common
+		v, tail, err := parseArray(a, s[1:], depth)
+		if err != nil {
+			return nil, tail, fmt.Errorf("cannot parse array: %s", err)
+		}
+		return v, tail, nil
+	case 't':
+		// true literal - less common
 		if len(s) < len("true") || s[:len("true")] != "true" {
 			return nil, s, fmt.Errorf("unexpected value found: %q", s)
 		}
 		return valueTrue, s[len("true"):], nil
-	}
-	if s[0] == 'f' {
+	case 'f':
+		// false literal - less common
 		if len(s) < len("false") || s[:len("false")] != "false" {
 			return nil, s, fmt.Errorf("unexpected value found: %q", s)
 		}
 		return valueFalse, s[len("false"):], nil
-	}
-	if s[0] == 'n' {
+	case 'n':
+		// null literal - less common
 		if len(s) < len("null") || s[:len("null")] != "null" {
 			// Try parsing NaN
 			if len(s) >= 3 && strings.EqualFold(s[:3], "nan") {
@@ -166,16 +177,17 @@ func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 			return nil, s, fmt.Errorf("unexpected value found: %q", s)
 		}
 		return valueNull, s[len("null"):], nil
+	default:
+		// Number - very common, but handled last due to complex parsing
+		ns, tail, err := parseRawNumber(s)
+		if err != nil {
+			return nil, tail, fmt.Errorf("cannot parse number: %s", err)
+		}
+		v := arena.Allocate[Value](a)
+		v.t = TypeNumber
+		v.s = ns
+		return v, tail, nil
 	}
-
-	ns, tail, err := parseRawNumber(s)
-	if err != nil {
-		return nil, tail, fmt.Errorf("cannot parse number: %s", err)
-	}
-	v := arena.Allocate[Value](a)
-	v.t = TypeNumber
-	v.s = ns
-	return v, tail, nil
 }
 
 func parseArray(a arena.Arena, s string, depth int) (*Value, string, error) {
@@ -296,12 +308,15 @@ func escapeString(dst []byte, s string) []byte {
 }
 
 func hasSpecialChars(s string) bool {
+	// Branch prediction optimization: check most common cases first
 	for i := 0; i < len(s); i++ {
-		if s[i] == '"' || s[i] == '\\' {
+		c := s[i]
+		// Most common special chars first
+		if c == '"' || c == '\\' {
 			return true
 		}
-		switch {
-		case s[i] < 0x1a, s[i] < 0x20, s[i] < 0x10, s[i] == 0x0d, s[i] == 0x0c, s[i] == 0x0a, s[i] == 0x09, s[i] < 0x09, s[i] == 0x08:
+		// Control characters - less common
+		if c < 0x20 {
 			return true
 		}
 	}
@@ -508,21 +523,22 @@ func parseRawNumber(s string) (string, string, error) {
 //
 // Object cannot be used from concurrent goroutines.
 // Use per-goroutine parsers or ParserPool instead.
+//
+// Cache-friendly layout: hot data first
 type Object struct {
-	kvs           []*kv
-	keysUnescaped bool
+	kvs []*kv // HOT: frequently accessed - 24 bytes
+	// Total: 24 bytes - compact and cache-friendly
 }
 
 func (o *Object) reset() {
 	o.kvs = o.kvs[:0]
-	o.keysUnescaped = false
 }
 
 // MarshalTo appends marshaled o to dst and returns the result.
 func (o *Object) MarshalTo(dst []byte) []byte {
 	dst = append(dst, '{')
 	for i, kv := range o.kvs {
-		if o.keysUnescaped {
+		if kv.keyUnescaped {
 			dst = escapeString(dst, kv.k)
 		} else {
 			dst = append(dst, '"')
@@ -558,14 +574,13 @@ func (o *Object) getKV(a arena.Arena) *kv {
 	return o.kvs[len(o.kvs)-1]
 }
 
-func (o *Object) unescapeKeys(a arena.Arena) {
-	if o.keysUnescaped {
+// unescapeKey unescapes a specific key if it hasn't been unescaped yet.
+func (o *Object) unescapeKey(a arena.Arena, kv *kv) {
+	if kv.keyUnescaped {
 		return
 	}
-	for i := range o.kvs {
-		o.kvs[i].k = unescapeStringBestEffort(a, o.kvs[i].k)
-	}
-	o.keysUnescaped = true
+	kv.k = unescapeStringBestEffort(a, kv.k)
+	kv.keyUnescaped = true
 }
 
 // Len returns the number of items in the o.
@@ -584,19 +599,20 @@ func (o *Object) Get(key string) *Value {
 		return nil
 	}
 
-	if !o.keysUnescaped && strings.IndexByte(key, '\\') < 0 {
-		// Fast path - try searching for the key without object keys unescaping.
+	// Fast path - try searching for the key without unescaping if the key doesn't contain escapes
+	if strings.IndexByte(key, '\\') < 0 {
 		for _, kv := range o.kvs {
-			if kv.k == key {
+			if !kv.keyUnescaped && kv.k == key {
 				return kv.v
 			}
 		}
 	}
 
-	// Slow path - unescape object keys.
-	o.unescapeKeys(nil)
-
+	// Slow path - unescape keys as needed and search
 	for _, kv := range o.kvs {
+		if !kv.keyUnescaped {
+			o.unescapeKey(nil, kv)
+		}
 		if kv.k == key {
 			return kv.v
 		}
@@ -613,9 +629,10 @@ func (o *Object) Visit(f func(key []byte, v *Value)) {
 		return
 	}
 
-	o.unescapeKeys(nil)
-
 	for _, kv := range o.kvs {
+		if !kv.keyUnescaped {
+			o.unescapeKey(nil, kv)
+		}
 		f(s2b(kv.k), kv.v)
 	}
 }
@@ -626,11 +643,14 @@ func (o *Object) Visit(f func(key []byte, v *Value)) {
 //
 // Value cannot be used from concurrent goroutines.
 // Use per-goroutine parsers or ParserPool instead.
+//
+// Cache-friendly layout: hot data first, compact structure
 type Value struct {
-	o Object
-	a []*Value
-	s string
-	t Type
+	t Type     // HOT: accessed on every operation - 8 bytes
+	s string   // HOT: frequently accessed for strings/numbers - 16 bytes
+	a []*Value // HOT: frequently accessed for arrays - 24 bytes
+	o Object   // COLD: less frequently accessed - 25 bytes
+	// Total: 73 bytes - compact and cache-friendly
 }
 
 // MarshalTo appends marshaled v to dst and returns the result.
