@@ -267,6 +267,8 @@ func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 		if err != nil {
 			return nil, s, fmt.Errorf("cannot parse object key: %s", err)
 		}
+		kv.k = unescapeStringBestEffort(a, kv.k)
+		kv.keyUnescaped = true
 		s = skipWS(s)
 		if len(s) == 0 || s[0] != ':' {
 			return nil, s, fmt.Errorf("missing ':' after object key")
@@ -599,10 +601,10 @@ func (o *Object) Get(key string) *Value {
 		return nil
 	}
 
-	// Fast path - try searching for the key without unescaping if the key doesn't contain escapes
+	// Fast path - direct comparison works because keys are pre-unescaped during parsing
 	if strings.IndexByte(key, '\\') < 0 {
 		for _, kv := range o.kvs {
-			if !kv.keyUnescaped && kv.k == key {
+			if kv.k == key {
 				return kv.v
 			}
 		}

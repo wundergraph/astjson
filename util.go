@@ -2,6 +2,8 @@ package astjson
 
 import (
 	"unsafe"
+
+	"github.com/wundergraph/go-arena"
 )
 
 func b2s(b []byte) string {
@@ -10,6 +12,17 @@ func b2s(b []byte) string {
 
 func s2b(s string) (b []byte) {
 	return unsafe.Slice(unsafe.StringData(s), len(s))
+}
+
+// arenaString copies the string bytes onto the arena when a is non-nil.
+// When a is nil, returns s unchanged (heap string in heap struct is GC-safe).
+func arenaString(a arena.Arena, s string) string {
+	if a == nil {
+		return s
+	}
+	b := arena.AllocateSlice[byte](a, len(s), len(s))
+	copy(b, s)
+	return b2s(b)
 }
 
 const maxStartEndStringLen = 80
@@ -27,29 +40,31 @@ var (
 	NullValue = MustParse(`null`)
 )
 
-func AppendToArray(array, value *Value) {
+func AppendToArray(a arena.Arena, array, value *Value) {
 	if array.Type() != TypeArray {
 		return
 	}
 	items, _ := array.Array()
-	array.SetArrayItem(nil, len(items), value)
+	array.SetArrayItem(a, len(items), value)
 }
 
-func SetValue(v *Value, value *Value, path ...string) {
+func SetValue(a arena.Arena, v *Value, value *Value, path ...string) {
 	for i := 0; i < len(path)-1; i++ {
 		parent := v
 		v = v.Get(path[i])
 		if v == nil {
-			child := MustParse(`{}`)
-			parent.Set(nil, path[i], child)
-			v = child
+			child := ObjectValue(a)
+			parent.Set(a, path[i], child)
+			v = parent.Get(path[i])
 		}
 	}
-	v.Set(nil, path[len(path)-1], value)
+	v.Set(a, path[len(path)-1], value)
 }
 
-func SetNull(v *Value, path ...string) {
-	SetValue(v, MustParse(`null`), path...)
+func SetNull(a arena.Arena, v *Value, path ...string) {
+	null := arena.Allocate[Value](a)
+	null.t = TypeNull
+	SetValue(a, v, null, path...)
 }
 
 func ValueIsNonNull(v *Value) bool {
@@ -62,11 +77,13 @@ func ValueIsNonNull(v *Value) bool {
 	return true
 }
 
-func (v *Value) AppendArrayItems(right *Value) {
+func (v *Value) AppendArrayItems(a arena.Arena, right *Value) {
 	if v.t != TypeArray || right.t != TypeArray {
 		return
 	}
-	v.a = append(v.a, right.a...)
+	for _, item := range right.a {
+		v.a = arena.SliceAppend(a, v.a, item)
+	}
 }
 
 func ValueIsNull(v *Value) bool {

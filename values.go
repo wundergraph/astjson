@@ -1,7 +1,7 @@
 package astjson
 
 import (
-	"fmt"
+	"strconv"
 
 	"github.com/wundergraph/go-arena"
 )
@@ -9,7 +9,7 @@ import (
 func StringValue(a arena.Arena, s string) *Value {
 	v := arena.Allocate[Value](a)
 	v.t = TypeString
-	v.s = s
+	v.s = arenaString(a, s)
 	return v
 }
 
@@ -23,21 +23,21 @@ func StringValueBytes(a arena.Arena, b []byte) *Value {
 func IntValue(a arena.Arena, i int) *Value {
 	v := arena.Allocate[Value](a)
 	v.t = TypeNumber
-	v.s = fmt.Sprintf("%d", i)
+	v.s = arenaString(a, strconv.Itoa(i))
 	return v
 }
 
 func FloatValue(a arena.Arena, f float64) *Value {
 	v := arena.Allocate[Value](a)
 	v.t = TypeNumber
-	v.s = fmt.Sprintf("%g", f)
+	v.s = arenaString(a, strconv.FormatFloat(f, 'g', -1, 64))
 	return v
 }
 
 func NumberValue(a arena.Arena, s string) *Value {
 	v := arena.Allocate[Value](a)
 	v.t = TypeNumber
-	v.s = s
+	v.s = arenaString(a, s)
 	return v
 }
 

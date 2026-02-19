@@ -118,12 +118,10 @@ func MergeValuesWithPath(ar arena.Arena, a, b *Value, path ...string) (v *Value,
 	if len(path) == 0 {
 		return MergeValues(ar, a, b)
 	}
-	root := &Value{
-		t: TypeObject,
-	}
+	root := ObjectValue(ar)
 	current := root
 	for i := 0; i < len(path)-1; i++ {
-		current.Set(ar, path[i], &Value{t: TypeObject})
+		current.Set(ar, path[i], ObjectValue(ar))
 		current = current.Get(path[i])
 	}
 	current.Set(ar, path[len(path)-1], b)

@@ -110,7 +110,7 @@ func TestValueDelSet(t *testing.T) {
 func TestValue_AppendArrayItems(t *testing.T) {
 	left := MustParse(`[1,2,3]`)
 	right := MustParse(`[4,5,6]`)
-	left.AppendArrayItems(right)
+	left.AppendArrayItems(nil, right)
 	if len(left.GetArray()) != 6 {
 		t.Fatalf("unexpected length; got %d; want %d", len(left.GetArray()), 6)
 	}

@@ -13,9 +13,9 @@ func (o *Object) Del(key string) {
 		return
 	}
 	if strings.IndexByte(key, '\\') < 0 {
-		// Fast path - try searching for the key without unescaping
+		// Fast path - direct comparison works because keys are pre-unescaped during parsing
 		for i, kv := range o.kvs {
-			if !kv.keyUnescaped && kv.k == key {
+			if kv.k == key {
 				o.kvs = append(o.kvs[:i], o.kvs[i+1:]...)
 				return
 			}
@@ -76,7 +76,7 @@ func (o *Object) Set(a arena.Arena, key string, value *Value) {
 
 	// Add new entry.
 	kv := o.getKV(a)
-	kv.k = key
+	kv.k = arenaString(a, key)
 	kv.v = value
 	kv.keyUnescaped = true // New keys are already unescaped since they come from user input
 }
