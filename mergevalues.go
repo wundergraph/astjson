@@ -8,11 +8,25 @@ import (
 )
 
 var (
-	ErrMergeDifferentTypes        = errors.New("cannot merge different types")
+	// ErrMergeDifferentTypes is returned when merging two values of incompatible types.
+	ErrMergeDifferentTypes = errors.New("cannot merge different types")
+	// ErrMergeDifferingArrayLengths is returned when merging arrays of different lengths.
 	ErrMergeDifferingArrayLengths = errors.New("cannot merge arrays of differing lengths")
-	ErrMergeUnknownType           = errors.New("cannot merge unknown type")
+	// ErrMergeUnknownType is returned when merging a value with an unrecognized type.
+	ErrMergeUnknownType = errors.New("cannot merge unknown type")
 )
 
+// MergeValues recursively merges b into a and returns the result. For objects,
+// keys from b are added to or replace keys in a. For arrays, elements are
+// merged pairwise (arrays must have equal length). For scalars, b replaces a
+// when the values differ.
+//
+// The arena ar is used for any new allocations during the merge (new object
+// entries, key copies). Both a and b should have been allocated using the same
+// arena (or both on the heap) to avoid mixing memory lifetimes.
+//
+// Returns the merged value, whether a was changed, and any error.
+// If a is nil, returns (b, true, nil). If b is nil, returns (a, false, nil).
 func MergeValues(ar arena.Arena, a, b *Value) (v *Value, changed bool, err error) {
 	if a == nil {
 		return b, true, nil
@@ -111,6 +125,13 @@ func MergeValues(ar arena.Arena, a, b *Value) (v *Value, changed bool, err error
 	}
 }
 
+// MergeValuesWithPath wraps b in a nested object structure at the given path,
+// then merges the result into a using [MergeValues]. For example, with
+// path ["foo", "bar"], b is wrapped as {"foo": {"bar": b}} before merging.
+//
+// If path is empty, behaves identically to [MergeValues].
+//
+// The arena ar is used for allocating the wrapper objects and during the merge.
 func MergeValuesWithPath(ar arena.Arena, a, b *Value, path ...string) (v *Value, changed bool, err error) {
 	if len(path) == 0 {
 		return MergeValues(ar, a, b)

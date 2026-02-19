@@ -36,10 +36,15 @@ func startEndString(s string) string {
 	return start + "..." + end
 }
 
+// NullValue is a heap-allocated JSON null singleton. It is safe to use from
+// any context (heap or arena) since it is a package-level global that is always
+// reachable by the GC.
 var (
 	NullValue = MustParse(`null`)
 )
 
+// AppendToArray appends value to the end of array. Does nothing if array is
+// not of TypeArray. The arena a is used to grow the array's backing slice.
 func AppendToArray(a arena.Arena, array, value *Value) {
 	if array.Type() != TypeArray {
 		return
@@ -48,6 +53,12 @@ func AppendToArray(a arena.Arena, array, value *Value) {
 	array.SetArrayItem(a, len(items), value)
 }
 
+// SetValue sets value at the nested key path within v. Intermediate object
+// nodes are created on the arena as needed when they don't exist. The path
+// must have at least one element.
+//
+// Object keys created along the path are copied onto the arena when a is
+// non-nil, ensuring GC safety.
 func SetValue(a arena.Arena, v *Value, value *Value, path ...string) {
 	for i := 0; i < len(path)-1; i++ {
 		parent := v
@@ -61,12 +72,15 @@ func SetValue(a arena.Arena, v *Value, value *Value, path ...string) {
 	v.Set(a, path[len(path)-1], value)
 }
 
+// SetNull sets a null value at the nested key path within v. The null Value is
+// allocated on the arena when a is non-nil. See [SetValue] for path behavior.
 func SetNull(a arena.Arena, v *Value, path ...string) {
 	null := arena.Allocate[Value](a)
 	null.t = TypeNull
 	SetValue(a, v, null, path...)
 }
 
+// ValueIsNonNull reports whether v is non-nil and not TypeNull.
 func ValueIsNonNull(v *Value) bool {
 	if v == nil {
 		return false
@@ -77,6 +91,9 @@ func ValueIsNonNull(v *Value) bool {
 	return true
 }
 
+// AppendArrayItems appends all elements from right into v. Both v and right
+// must be TypeArray; does nothing otherwise. The arena a is used to grow v's
+// backing slice.
 func (v *Value) AppendArrayItems(a arena.Arena, right *Value) {
 	if v.t != TypeArray || right.t != TypeArray {
 		return
@@ -86,10 +103,14 @@ func (v *Value) AppendArrayItems(a arena.Arena, right *Value) {
 	}
 }
 
+// ValueIsNull reports whether v is nil or TypeNull.
 func ValueIsNull(v *Value) bool {
 	return !ValueIsNonNull(v)
 }
 
+// DeduplicateObjectKeysRecursively removes duplicate object keys from v and
+// all nested objects and arrays, keeping the first occurrence of each key.
+// This modifies v in place and does not require an arena.
 func DeduplicateObjectKeysRecursively(v *Value) {
 	if v.Type() == TypeArray {
 		a := v.GetArray()

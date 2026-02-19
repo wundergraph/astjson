@@ -10,10 +10,12 @@ import (
 	"github.com/wundergraph/go-arena"
 )
 
+// ParseError wraps a JSON parsing error.
 type ParseError struct {
 	Err error
 }
 
+// Error returns the error message. Returns an empty string if p is nil.
 func (p *ParseError) Error() string {
 	if p == nil {
 		return ""
@@ -21,6 +23,7 @@ func (p *ParseError) Error() string {
 	return p.Err.Error()
 }
 
+// NewParseError wraps err in a ParseError. Returns nil if err is nil.
 func NewParseError(err error) *ParseError {
 	if err == nil {
 		return nil
@@ -32,6 +35,12 @@ func NewParseError(err error) *ParseError {
 // Parser parses JSON.
 //
 // Parser may be re-used for subsequent parsing.
+//
+// Parser supports two allocation modes: heap mode (Parse, ParseBytes) where
+// all values are heap-allocated and GC-managed, and arena mode
+// (ParseWithArena, ParseBytesWithArena) where all values and their backing
+// data are allocated on a caller-provided arena. See the package
+// documentation for details on GC safety.
 //
 // Parser cannot be used from concurrent goroutines.
 // Use per-goroutine parsers or ParserPool instead.
@@ -47,6 +56,16 @@ func (p *Parser) Parse(s string) (*Value, error) {
 	return p.parse(nil, s)
 }
 
+// ParseWithArena parses s containing JSON, allocating all values on the arena.
+//
+// The input string s is copied onto the arena before parsing, so the caller
+// may drop references to s immediately after this call returns. All parsed
+// Values, their string data, object keys, and array backing slices live
+// entirely in arena memory, making the result independent of the GC.
+//
+// The returned value is valid for the lifetime of the arena.
+//
+// When a is nil, behaves identically to Parse (heap allocation).
 func (p *Parser) ParseWithArena(a arena.Arena, s string) (*Value, error) {
 	if a != nil {
 		s = arenaString(a, s)
@@ -63,6 +82,19 @@ func (p *Parser) ParseBytes(b []byte) (*Value, error) {
 	return p.parse(nil, b2s(b))
 }
 
+// ParseBytesWithArena parses b containing JSON, allocating all values on the
+// arena.
+//
+// The input bytes b are copied onto the arena before parsing, so the caller
+// may reuse or discard b immediately after this call returns. All parsed
+// Values, their string data, object keys, and array backing slices live
+// entirely in arena memory, making the result independent of the GC.
+//
+// The returned value is valid for the lifetime of the arena.
+//
+// When a is nil, behaves identically to ParseBytes (heap allocation). In that
+// case the caller must not modify b while the returned Value is in use, as it
+// may reference b's underlying memory via zero-copy conversion.
 func (p *Parser) ParseBytesWithArena(a arena.Arena, b []byte) (*Value, error) {
 	if a != nil {
 		ab := arena.AllocateSlice[byte](a, len(b), len(b))

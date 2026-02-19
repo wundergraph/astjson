@@ -127,6 +127,15 @@ func Parse(s string) (*Value, error) {
 	return p.Parse(s)
 }
 
+// ParseWithArena parses json string s, allocating all values on the arena.
+//
+// The input string is copied onto the arena before parsing, so the caller may
+// drop references to s immediately after this call returns. All parsed values
+// live entirely in arena memory and are valid for the arena's lifetime.
+//
+// When a is nil, behaves identically to Parse (heap allocation).
+//
+// The function is slower than Parser.ParseWithArena for re-used Parser.
 func ParseWithArena(a arena.Arena, s string) (*Value, error) {
 	var p Parser
 	return p.ParseWithArena(a, s)
@@ -152,6 +161,17 @@ func ParseBytes(b []byte) (*Value, error) {
 	return p.ParseBytes(b)
 }
 
+// ParseBytesWithArena parses b containing json, allocating all values on the
+// arena.
+//
+// The input bytes are copied onto the arena before parsing, so the caller may
+// reuse or discard b immediately after this call returns. All parsed values
+// live entirely in arena memory and are valid for the arena's lifetime.
+//
+// When a is nil, behaves identically to ParseBytes (heap allocation). In that
+// case the caller must not modify b while the returned Value is in use.
+//
+// The function is slower than Parser.ParseBytesWithArena for re-used Parser.
 func ParseBytesWithArena(a arena.Arena, b []byte) (*Value, error) {
 	var p Parser
 	return p.ParseBytesWithArena(a, b)
