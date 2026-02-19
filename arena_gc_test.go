@@ -1005,3 +1005,147 @@ func TestArenaGCSafety_ComplexWorkflow(t *testing.T) {
 		}
 	}
 }
+
+// heapJSON returns a heap-allocated JSON string with unique values per iteration.
+// The //go:noinline directive ensures the string is truly heap-allocated.
+//
+//go:noinline
+func heapJSON(i int) string {
+	return fmt.Sprintf(`{"name":"user_%d","age":%d,"score":3.14,"active":true,"tags":["tag_%d","arena"],"nested":{"key":"val_%d","count":%d}}`,
+		i, 20+i, i, i, i*10)
+}
+
+// TestArenaGCSafety_ParseWithArena_HeapInput tests that ParseWithArena is safe
+// when the input string is heap-allocated and goes out of scope before GC.
+// This catches the bug where parsed substrings (numbers, unescaped strings, keys)
+// reference the input's backing array which the GC can collect.
+func TestArenaGCSafety_ParseWithArena_HeapInput(t *testing.T) {
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	for i := 0; i < gcTestIterations; i++ {
+		a := arena.NewMonotonicArena()
+		var p Parser
+		// Use a heap-allocated JSON string (not a literal)
+		input := heapJSON(i)
+		v, err := p.ParseWithArena(a, input)
+		if err != nil {
+			t.Fatalf("iteration %d: parse: %s", i, err)
+		}
+		// Drop reference to input so GC can collect it
+		input = ""
+		_ = input
+		forceGC()
+
+		// Verify string values (substrings of input)
+		name := v.GetStringBytes("name")
+		expected := fmt.Sprintf("user_%d", i)
+		if string(name) != expected {
+			t.Fatalf("iteration %d: name got %q, want %q", i, string(name), expected)
+		}
+
+		// Verify number values (substrings of input)
+		age := v.GetInt("age")
+		if age != 20+i {
+			t.Fatalf("iteration %d: age got %d, want %d", i, age, 20+i)
+		}
+		score := v.GetFloat64("score")
+		if score != 3.14 {
+			t.Fatalf("iteration %d: score got %f, want 3.14", i, score)
+		}
+
+		// Verify boolean
+		if !v.GetBool("active") {
+			t.Fatalf("iteration %d: active should be true", i)
+		}
+
+		// Verify array with string elements
+		tags := v.GetArray("tags")
+		if len(tags) != 2 {
+			t.Fatalf("iteration %d: expected 2 tags, got %d", i, len(tags))
+		}
+		tag0, _ := tags[0].StringBytes()
+		expectedTag := fmt.Sprintf("tag_%d", i)
+		if string(tag0) != expectedTag {
+			t.Fatalf("iteration %d: tag[0] got %q, want %q", i, string(tag0), expectedTag)
+		}
+
+		// Verify nested object (keys and values are substrings of input)
+		nested := v.Get("nested")
+		if nested == nil {
+			t.Fatalf("iteration %d: nested is nil", i)
+		}
+		nestedKey := nested.GetStringBytes("key")
+		expectedVal := fmt.Sprintf("val_%d", i)
+		if string(nestedKey) != expectedVal {
+			t.Fatalf("iteration %d: nested.key got %q, want %q", i, string(nestedKey), expectedVal)
+		}
+		nestedCount := nested.GetInt("count")
+		if nestedCount != i*10 {
+			t.Fatalf("iteration %d: nested.count got %d, want %d", i, nestedCount, i*10)
+		}
+
+		// Verify full marshal round-trip
+		marshaled := string(v.MarshalTo(nil))
+		if len(marshaled) == 0 {
+			t.Fatalf("iteration %d: MarshalTo returned empty", i)
+		}
+	}
+}
+
+// TestArenaGCSafety_ParseBytesWithArena_HeapInput tests that ParseBytesWithArena
+// is safe when the input byte slice is heap-allocated and not pre-copied to the arena.
+func TestArenaGCSafety_ParseBytesWithArena_HeapInput(t *testing.T) {
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	for i := 0; i < gcTestIterations; i++ {
+		a := arena.NewMonotonicArena()
+		var p Parser
+		// Use heap-allocated bytes directly — no manual arena copy
+		input := []byte(heapJSON(i))
+		v, err := p.ParseBytesWithArena(a, input)
+		if err != nil {
+			t.Fatalf("iteration %d: parse: %s", i, err)
+		}
+		// Drop reference to input
+		input = nil
+		forceGC()
+
+		name := v.GetStringBytes("name")
+		expected := fmt.Sprintf("user_%d", i)
+		if string(name) != expected {
+			t.Fatalf("iteration %d: name got %q, want %q", i, string(name), expected)
+		}
+		age := v.GetInt("age")
+		if age != 20+i {
+			t.Fatalf("iteration %d: age got %d, want %d", i, age, 20+i)
+		}
+		marshaled := string(v.MarshalTo(nil))
+		if len(marshaled) == 0 {
+			t.Fatalf("iteration %d: MarshalTo returned empty", i)
+		}
+	}
+}
+
+// TestArenaGCSafety_StringValueBytes_HeapInput tests that StringValueBytes
+// is safe when called with heap-allocated bytes without pre-copying to the arena.
+func TestArenaGCSafety_StringValueBytes_HeapInput(t *testing.T) {
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	for i := 0; i < gcTestIterations; i++ {
+		a := arena.NewMonotonicArena()
+		// Pass heap bytes directly — no manual arena copy
+		src := heapBytes("direct", i)
+		v := StringValueBytes(a, src)
+		// Drop reference to src
+		src = nil
+		forceGC()
+		got := v.String()
+		expected := `"` + fmt.Sprintf("direct_%d_padding_to_ensure_heap_allocation", i) + `"`
+		if got != expected {
+			t.Fatalf("iteration %d: got %q, want %q", i, got, expected)
+		}
+	}
+}

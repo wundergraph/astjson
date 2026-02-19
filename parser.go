@@ -48,6 +48,9 @@ func (p *Parser) Parse(s string) (*Value, error) {
 }
 
 func (p *Parser) ParseWithArena(a arena.Arena, s string) (*Value, error) {
+	if a != nil {
+		s = arenaString(a, s)
+	}
 	return p.parse(a, s)
 }
 
@@ -61,7 +64,12 @@ func (p *Parser) ParseBytes(b []byte) (*Value, error) {
 }
 
 func (p *Parser) ParseBytesWithArena(a arena.Arena, b []byte) (*Value, error) {
-	return p.parse(a, b2s(b))
+	if a != nil {
+		ab := arena.AllocateSlice[byte](a, len(b), len(b))
+		copy(ab, b)
+		return p.parse(a, b2s(ab))
+	}
+	return p.parse(nil, b2s(b))
 }
 
 func (p *Parser) parse(a arena.Arena, s string) (*Value, error) {
@@ -596,25 +604,12 @@ func (o *Object) Len() int {
 //
 // The returned value is valid until Parse is called on the Parser returned o.
 func (o *Object) Get(key string) *Value {
-
 	if o == nil {
 		return nil
 	}
-
-	// Fast path - direct comparison works because keys are pre-unescaped during parsing
-	if strings.IndexByte(key, '\\') < 0 {
-		for _, kv := range o.kvs {
-			if kv.k == key {
-				return kv.v
-			}
-		}
-	}
-
-	// Slow path - unescape keys as needed and search
+	// Keys are always pre-unescaped during parsing and Object.Set,
+	// so direct comparison is sufficient.
 	for _, kv := range o.kvs {
-		if !kv.keyUnescaped {
-			o.unescapeKey(nil, kv)
-		}
 		if kv.k == key {
 			return kv.v
 		}
@@ -630,11 +625,8 @@ func (o *Object) Visit(f func(key []byte, v *Value)) {
 	if o == nil {
 		return
 	}
-
+	// Keys are always pre-unescaped during parsing and Object.Set.
 	for _, kv := range o.kvs {
-		if !kv.keyUnescaped {
-			o.unescapeKey(nil, kv)
-		}
 		f(s2b(kv.k), kv.v)
 	}
 }

@@ -2,7 +2,6 @@ package astjson
 
 import (
 	"strconv"
-	"strings"
 
 	"github.com/wundergraph/go-arena"
 )
@@ -12,21 +11,9 @@ func (o *Object) Del(key string) {
 	if o == nil {
 		return
 	}
-	if strings.IndexByte(key, '\\') < 0 {
-		// Fast path - direct comparison works because keys are pre-unescaped during parsing
-		for i, kv := range o.kvs {
-			if kv.k == key {
-				o.kvs = append(o.kvs[:i], o.kvs[i+1:]...)
-				return
-			}
-		}
-	}
-
-	// Slow path - unescape keys as needed and search
+	// Keys are always pre-unescaped during parsing and Object.Set,
+	// so direct comparison is sufficient.
 	for i, kv := range o.kvs {
-		if !kv.keyUnescaped {
-			o.unescapeKey(nil, kv)
-		}
 		if kv.k == key {
 			o.kvs = append(o.kvs[:i], o.kvs[i+1:]...)
 			return

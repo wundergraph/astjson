@@ -16,7 +16,13 @@ func StringValue(a arena.Arena, s string) *Value {
 func StringValueBytes(a arena.Arena, b []byte) *Value {
 	v := arena.Allocate[Value](a)
 	v.t = TypeString
-	v.s = b2s(b)
+	if a != nil {
+		ab := arena.AllocateSlice[byte](a, len(b), len(b))
+		copy(ab, b)
+		v.s = b2s(ab)
+	} else {
+		v.s = b2s(b)
+	}
 	return v
 }
 
