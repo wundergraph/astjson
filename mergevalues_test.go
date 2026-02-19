@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/wundergraph/go-arena"
 )
 
 func TestMergeValues(t *testing.T) {
@@ -304,5 +305,29 @@ func TestMergeValues(t *testing.T) {
 		right := MustParse(`{"a":{"b":"c"}}`)
 		_, _, err := MergeValues(nil, left, right)
 		require.Error(t, err)
+	})
+	t.Run("unknown type", func(t *testing.T) {
+		t.Parallel()
+		a := &Value{t: Type(99)}
+		b := &Value{t: Type(99)}
+		_, _, err := MergeValues(nil, a, b)
+		require.Equal(t, ErrMergeUnknownType, err)
+	})
+	t.Run("object with unescaped key", func(t *testing.T) {
+		t.Parallel()
+		ar := arena.NewMonotonicArena()
+		left := MustParse(`{"foo":1}`)
+
+		right := &Value{t: TypeObject}
+		entry := &kv{
+			k:            `bar`,
+			v:            MustParse(`2`),
+			keyUnescaped: false,
+		}
+		right.o.kvs = append(right.o.kvs, entry)
+
+		merged, _, err := MergeValues(ar, left, right)
+		require.NoError(t, err)
+		require.NotNil(t, merged.Get("bar"))
 	})
 }

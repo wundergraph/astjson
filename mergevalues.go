@@ -91,9 +91,6 @@ func MergeValues(ar arena.Arena, a, b *Value) (v *Value, changed bool, err error
 		}
 		return a, false, nil
 	case TypeNull:
-		if b.Type() != TypeNull {
-			return b, true, nil
-		}
 		return a, false, nil
 	case TypeNumber:
 		af, _ := a.Float64()

@@ -2102,3 +2102,37 @@ func TestGetIntGetUintOverflow(t *testing.T) {
 		}
 	})
 }
+
+func TestParseBytesWithArenaNilArena(t *testing.T) {
+	var p Parser
+	v, err := p.ParseBytesWithArena(nil, []byte(`[1,2,3]`))
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if v.Type() != TypeArray {
+		t.Fatalf("expected array type, got %v", v.Type())
+	}
+}
+
+func TestObjectMarshalToRawKey(t *testing.T) {
+	// Construct an object with a key that hasn't been unescaped (keyUnescaped=false).
+	// In this case MarshalTo should emit the raw key wrapped in quotes without escaping.
+	o := &Object{}
+	entry := &kv{
+		k:             `already\"escaped`,
+		v:             valueNull,
+		keyUnescaped:  false,
+	}
+	o.kvs = append(o.kvs, entry)
+
+	result := string(o.MarshalTo(nil))
+	expected := `{"already\"escaped":null}`
+	if result != expected {
+		t.Fatalf("got %q, want %q", result, expected)
+	}
+}
+
+func TestUnescapeStringBestEffortInvalidSurrogatePairHex(t *testing.T) {
+	// High surrogate \ud83e followed by \u with invalid hex digits
+	testUnescapeStringBestEffort(t, `\ud83e\uzzzz`, `\ud83e\uzzzz`)
+}

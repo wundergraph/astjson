@@ -606,3 +606,25 @@ func TestObjectDelWithNilArena(t *testing.T) {
 		t.Fatalf("expected key 'x' to still exist")
 	}
 }
+
+func TestObjectSetWithUnescapedKey(t *testing.T) {
+	// Construct an object with a key that hasn't been unescaped yet.
+	// When Set iterates over existing keys, it should call unescapeKey.
+	a := arena.NewMonotonicArena()
+	o := &Object{}
+	entry := &kv{
+		k:            `hello`,
+		v:            valueNull,
+		keyUnescaped: false,
+	}
+	o.kvs = append(o.kvs, entry)
+
+	o.Set(a, "other", MustParse(`1`))
+
+	if !o.kvs[0].keyUnescaped {
+		t.Fatalf("expected key to be unescaped after Set")
+	}
+	if o.Len() != 2 {
+		t.Fatalf("expected 2 keys, got %d", o.Len())
+	}
+}

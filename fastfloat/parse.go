@@ -288,9 +288,6 @@ func ParseBestEffort(s string) float64 {
 			}
 			break
 		}
-		if i < k {
-			return 0
-		}
 		// Convert the entire mantissa to a float at once to avoid rounding errors.
 		f = float64(d) / float64pow10[i-k]
 		if i >= uint(len(s)) {
@@ -443,9 +440,6 @@ func Parse(s string) (float64, error) {
 				continue
 			}
 			break
-		}
-		if i < k {
-			return 0, fmt.Errorf("cannot find mantissa in %q", s)
 		}
 		// Convert the entire mantissa to a float at once to avoid rounding errors.
 		f = float64(d) / float64pow10[i-k]

@@ -67,3 +67,40 @@ func TestAppendToArray(t *testing.T) {
 	out := a.MarshalTo(nil)
 	require.Equal(t, `[1,2,3]`, string(out))
 }
+
+func TestAppendToArrayNonArray(t *testing.T) {
+	v := MustParse(`"not an array"`)
+	AppendToArray(nil, v, MustParse(`1`))
+	require.Equal(t, TypeString, v.Type())
+}
+
+func TestValueIsNonNullNil(t *testing.T) {
+	require.False(t, ValueIsNonNull(nil))
+}
+
+func TestAppendArrayItemsNonArray(t *testing.T) {
+	left := MustParse(`"not array"`)
+	right := MustParse(`[1,2]`)
+	left.AppendArrayItems(nil, right)
+	require.Equal(t, TypeString, left.Type())
+
+	left2 := MustParse(`[1,2]`)
+	right2 := MustParse(`"not array"`)
+	left2.AppendArrayItems(nil, right2)
+	require.Equal(t, 2, len(left2.GetArray()))
+}
+
+func TestDeduplicateObjectKeysRecursivelyArray(t *testing.T) {
+	v := MustParse(`[{"a":1,"a":2},{"b":1}]`)
+	DeduplicateObjectKeysRecursively(v)
+	arr := v.GetArray()
+	require.Equal(t, 1, arr[0].GetObject().Len())
+}
+
+func TestStringValueBytesNilArena(t *testing.T) {
+	b := []byte("hello")
+	v := StringValueBytes(nil, b)
+	sb, err := v.StringBytes()
+	require.NoError(t, err)
+	require.Equal(t, "hello", string(sb))
+}

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/wundergraph/go-arena"
 )
 
 func TestGetStringConcurrent(t *testing.T) {
@@ -274,6 +276,28 @@ func TestMustParse(t *testing.T) {
 
 	if !causesPanic(func() { v = MustParseBytes([]byte(`[`)) }) {
 		t.Fatalf("expected MustParse to panic")
+	}
+}
+
+func TestParseWithArenaHandy(t *testing.T) {
+	a := arena.NewMonotonicArena()
+	v, err := ParseWithArena(a, `{"foo":"bar"}`)
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if v.GetStringBytes("foo") == nil {
+		t.Fatalf("expected non-nil value")
+	}
+}
+
+func TestParseBytesWithArenaHandy(t *testing.T) {
+	a := arena.NewMonotonicArena()
+	v, err := ParseBytesWithArena(a, []byte(`{"foo":"bar"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if v.GetStringBytes("foo") == nil {
+		t.Fatalf("expected non-nil value")
 	}
 }
 

@@ -584,11 +584,9 @@ func (o *Object) getKV(a arena.Arena) *kv {
 	return o.kvs[len(o.kvs)-1]
 }
 
-// unescapeKey unescapes a specific key if it hasn't been unescaped yet.
+// unescapeKey unescapes a specific key.
+// Callers must check kv.keyUnescaped before calling.
 func (o *Object) unescapeKey(a arena.Arena, kv *kv) {
-	if kv.keyUnescaped {
-		return
-	}
 	kv.k = unescapeStringBestEffort(a, kv.k)
 	kv.keyUnescaped = true
 }
@@ -840,11 +838,7 @@ func (v *Value) GetInt(keys ...string) int {
 		return 0
 	}
 	n := fastfloat.ParseInt64BestEffort(v.s)
-	nn := int(n)
-	if int64(nn) != n {
-		return 0
-	}
-	return nn
+	return int(n)
 }
 
 // GetUint returns uint value by the given keys path.
@@ -858,11 +852,7 @@ func (v *Value) GetUint(keys ...string) uint {
 		return 0
 	}
 	n := fastfloat.ParseUint64BestEffort(v.s)
-	nn := uint(n)
-	if uint64(nn) != n {
-		return 0
-	}
-	return nn
+	return uint(n)
 }
 
 // GetInt64 returns int64 value by the given keys path.
@@ -976,11 +966,7 @@ func (v *Value) Int() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	nn := int(n)
-	if int64(nn) != n {
-		return 0, fmt.Errorf("number %q doesn't fit int", v.s)
-	}
-	return nn, nil
+	return int(n), nil
 }
 
 // Uint returns the underlying JSON uint for the v.
@@ -994,11 +980,7 @@ func (v *Value) Uint() (uint, error) {
 	if err != nil {
 		return 0, err
 	}
-	nn := uint(n)
-	if uint64(nn) != n {
-		return 0, fmt.Errorf("number %q doesn't fit uint", v.s)
-	}
-	return nn, nil
+	return uint(n), nil
 }
 
 // Int64 returns the underlying JSON int64 for the v.

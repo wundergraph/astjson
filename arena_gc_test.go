@@ -1108,8 +1108,8 @@ func TestArenaGCSafety_ParseBytesWithArena_HeapInput(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse: %s", i, err)
 		}
-		// Drop reference to input
-		input = nil
+		// Drop reference to input so GC can collect the backing array
+		clear(input)
 		forceGC()
 
 		name := v.GetStringBytes("name")
@@ -1139,8 +1139,8 @@ func TestArenaGCSafety_StringValueBytes_HeapInput(t *testing.T) {
 		// Pass heap bytes directly — no manual arena copy
 		src := heapBytes("direct", i)
 		v := StringValueBytes(a, src)
-		// Drop reference to src
-		src = nil
+		// Drop reference to src so GC can collect the backing array
+		clear(src)
 		forceGC()
 		got := v.String()
 		expected := `"` + fmt.Sprintf("direct_%d_padding_to_ensure_heap_allocation", i) + `"`
