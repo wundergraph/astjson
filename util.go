@@ -129,7 +129,7 @@ func DeepCopy(a arena.Arena, v *Value) *Value {
 				cp.a[i] = DeepCopy(a, item)
 			}
 		}
-	// TypeTrue, TypeFalse, TypeNull: only t is needed, already set above.
+	// TypeTrue, TypeFalse, TypeNull need no extra work: cp.t = v.t (line 119) is sufficient.
 	}
 	return cp
 }
