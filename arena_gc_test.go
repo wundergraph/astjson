@@ -1613,7 +1613,6 @@ func TestArenaGCSafety_ArenaBufferGrowth(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse: %s", i, err)
 		}
-		buf = nil
 		forceGC()
 
 		arr := v.GetArray()
@@ -1832,7 +1831,6 @@ func TestArenaGCSafety_ManyObjectKeys(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse: %s", i, err)
 		}
-		buf = nil
 		forceGC()
 
 		o, _ := v.Object()
