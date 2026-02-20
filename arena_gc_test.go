@@ -1318,6 +1318,22 @@ func TestArenaGCSafety_DeepCopy_NilValue(t *testing.T) {
 	runtime.KeepAlive(a)
 }
 
+// TestArenaGCSafety_DeepCopy_EmptyObject verifies that DeepCopy handles an
+// empty object (zero keys) without error.
+func TestArenaGCSafety_DeepCopy_EmptyObject(t *testing.T) {
+	a := arena.NewMonotonicArena()
+	obj := ObjectValue(a)
+	cp := DeepCopy(a, obj)
+	if cp.Type() != TypeObject {
+		t.Fatalf("expected TypeObject, got %v", cp.Type())
+	}
+	o, _ := cp.Object()
+	if o.Len() != 0 {
+		t.Fatalf("expected empty object, got %d keys", o.Len())
+	}
+	runtime.KeepAlive(a)
+}
+
 func TestArenaGCSafety_UnescapeAllBranches(t *testing.T) {
 	old := debug.SetGCPercent(1)
 	defer debug.SetGCPercent(old)
