@@ -55,6 +55,7 @@ func TestArenaGCSafety_StringValue(t *testing.T) {
 		if got != expected {
 			t.Fatalf("iteration %d: got %q, want %q", i, got, expected)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -71,6 +72,7 @@ func TestArenaGCSafety_IntValue(t *testing.T) {
 		if got != expected {
 			t.Fatalf("iteration %d: got %q, want %q", i, got, expected)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -88,6 +90,7 @@ func TestArenaGCSafety_FloatValue(t *testing.T) {
 		if got != expected {
 			t.Fatalf("iteration %d: got %q, want %q", i, got, expected)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -104,6 +107,7 @@ func TestArenaGCSafety_NumberValue(t *testing.T) {
 		if got != s {
 			t.Fatalf("iteration %d: got %q, want %q", i, got, s)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -124,6 +128,7 @@ func TestArenaGCSafety_StringValueBytes(t *testing.T) {
 		if got != expected {
 			t.Fatalf("iteration %d: got %q, want %q", i, got, expected)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -141,6 +146,7 @@ func TestArenaGCSafety_TrueValue(t *testing.T) {
 		if v.String() != "true" {
 			t.Fatalf("iteration %d: got %q, want %q", i, v.String(), "true")
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -158,6 +164,7 @@ func TestArenaGCSafety_FalseValue(t *testing.T) {
 		if v.String() != "false" {
 			t.Fatalf("iteration %d: got %q, want %q", i, v.String(), "false")
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -175,6 +182,7 @@ func TestArenaGCSafety_ObjectValue(t *testing.T) {
 		if v.String() != "{}" {
 			t.Fatalf("iteration %d: got %q, want %q", i, v.String(), "{}")
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -192,6 +200,7 @@ func TestArenaGCSafety_ArrayValue(t *testing.T) {
 		if v.String() != "[]" {
 			t.Fatalf("iteration %d: got %q, want %q", i, v.String(), "[]")
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -211,6 +220,7 @@ func TestArenaGCSafety_ObjectSet(t *testing.T) {
 		if got != expected {
 			t.Fatalf("iteration %d: got %q, want %q", i, got, expected)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -249,6 +259,7 @@ func TestArenaGCSafety_ValueSet(t *testing.T) {
 		if n != i*2 {
 			t.Fatalf("iteration %d: got %d, want %d", i, n, i*2)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -276,6 +287,7 @@ func TestArenaGCSafety_SetArrayItem(t *testing.T) {
 				t.Fatalf("iteration %d, item %d: got %d, want %d", i, j, n, i*10+j)
 			}
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -305,6 +317,7 @@ func TestArenaGCSafety_AppendToArray(t *testing.T) {
 				t.Fatalf("iteration %d, item %d: got %q, want %q", i, j, string(sb), expected)
 			}
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -338,6 +351,7 @@ func TestArenaGCSafety_AppendArrayItems(t *testing.T) {
 				t.Fatalf("iteration %d, item %d: got %d, want %d", i, j, n, expected)
 			}
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -371,6 +385,7 @@ func TestArenaGCSafety_SetValue(t *testing.T) {
 		if string(sb) != expected {
 			t.Fatalf("iteration %d: got %q, want %q", i, string(sb), expected)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -395,6 +410,7 @@ func TestArenaGCSafety_SetNull(t *testing.T) {
 		if got != `{"key":null}` {
 			t.Fatalf("iteration %d: got %q, want %q", i, got, `{"key":null}`)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -443,6 +459,7 @@ func TestArenaGCSafety_MergeValues(t *testing.T) {
 		if string(sb) != strconv.Itoa(i) {
 			t.Fatalf("iteration %d: key 'c' got %q, want %q", i, string(sb), strconv.Itoa(i))
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -481,6 +498,7 @@ func TestArenaGCSafety_MergeValuesWithPath(t *testing.T) {
 		if string(sb) != "value" {
 			t.Fatalf("iteration %d: existing got %q, want %q", i, string(sb), "value")
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -694,6 +712,7 @@ func TestArenaGCSafety_ParseWithArena(t *testing.T) {
 		if v.GetUint64("age") != 42 {
 			t.Fatalf("iteration %d: GetUint64 got %d, want 42", i, v.GetUint64("age"))
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -719,6 +738,7 @@ func TestArenaGCSafety_ParseBytesWithArena(t *testing.T) {
 		if got != expected {
 			t.Fatalf("iteration %d: got %q, want %q", i, got, expected)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -745,6 +765,7 @@ func TestArenaGCSafety_ObjectDel(t *testing.T) {
 		if o.Get("also_keep") == nil {
 			t.Fatalf("iteration %d: 'also_keep' should exist", i)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -777,6 +798,7 @@ func TestArenaGCSafety_ValueDel(t *testing.T) {
 		if v2.GetObject().Len() != 1 {
 			t.Fatalf("iteration %d: expected 1 key, got %d", i, v2.GetObject().Len())
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -804,6 +826,7 @@ func TestArenaGCSafety_DeduplicateObjectKeysRecursively(t *testing.T) {
 		if nested.Len() != 1 {
 			t.Fatalf("iteration %d: nested expected 1 key after dedup, got %d", i, nested.Len())
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -829,6 +852,7 @@ func TestArenaGCSafety_ValueIsNull(t *testing.T) {
 		if !ValueIsNonNull(nonNull) {
 			t.Fatalf("iteration %d: expected nonNull to be non-null", i)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -879,6 +903,7 @@ func TestArenaGCSafety_ParseWithArena_EscapedKeys(t *testing.T) {
 		if len(marshaled) == 0 {
 			t.Fatalf("iteration %d: MarshalTo returned empty", i)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -917,6 +942,7 @@ func TestArenaGCSafety_ParseWithArena_EscapedStrings(t *testing.T) {
 				t.Fatalf("iteration %d: key %q got %q, want %q", i, key, string(sb), expected)
 			}
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -1003,6 +1029,7 @@ func TestArenaGCSafety_ComplexWorkflow(t *testing.T) {
 		if len(marshaled) == 0 {
 			t.Fatalf("iteration %d: MarshalTo returned empty", i)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -1090,6 +1117,7 @@ func TestArenaGCSafety_ParseWithArena_HeapInput(t *testing.T) {
 		if len(marshaled) == 0 {
 			t.Fatalf("iteration %d: MarshalTo returned empty", i)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -1125,6 +1153,7 @@ func TestArenaGCSafety_ParseBytesWithArena_HeapInput(t *testing.T) {
 		if len(marshaled) == 0 {
 			t.Fatalf("iteration %d: MarshalTo returned empty", i)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -1147,6 +1176,7 @@ func TestArenaGCSafety_StringValueBytes_HeapInput(t *testing.T) {
 		if got != expected {
 			t.Fatalf("iteration %d: got %q, want %q", i, got, expected)
 		}
+		runtime.KeepAlive(a)
 	}
 }
 
@@ -1195,5 +1225,549 @@ func TestArenaGCSafety_MixingHeapAndArenaValues_Demonstration(t *testing.T) {
 		if string(sb) != expected {
 			t.Fatalf("iteration %d: got %q, want %q (heap value may have been collected)", i, string(sb), expected)
 		}
+		runtime.KeepAlive(a)
+	}
+}
+
+func TestArenaGCSafety_UnescapeAllBranches(t *testing.T) {
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	// JSON exercises every branch of unescapeStringBestEffort:
+	// simple escapes: \\ \/ \b \f \r \t \n \"
+	// unicode non-surrogate: \u0041 (A)
+	// surrogate pair: \uD83D\uDE00 (😀)
+	// lone high surrogate (no low follows): \uD800X
+	// unknown escape: \x
+	jsonInput := `{
+		"backslash": "a\\b",
+		"slash": "a\/b",
+		"backspace": "a\bb",
+		"formfeed": "a\fb",
+		"carriage": "a\rb",
+		"tab": "a\tb",
+		"newline": "a\nb",
+		"quote": "a\"b",
+		"unicode": "\u0041\u0042\u0043",
+		"surrogate": "\uD83D\uDE00",
+		"lone_surrogate": "\uD800X",
+		"unknown_esc": "\x",
+		"mixed": "a\tb\nc\\d\u0041"
+	}`
+
+	expected := map[string]string{
+		"backslash":      "a\\b",
+		"slash":          "a/b",
+		"backspace":      "a\bb",
+		"formfeed":       "a\fb",
+		"carriage":       "a\rb",
+		"tab":            "a\tb",
+		"newline":        "a\nb",
+		"quote":          "a\"b",
+		"unicode":        "ABC",
+		"surrogate":      "😀",
+		"lone_surrogate": "\\uD800X",
+		"unknown_esc":    "\\x",
+		"mixed":          "a\tb\nc\\dA",
+	}
+
+	for i := 0; i < gcTestIterations; i++ {
+		a := arena.NewMonotonicArena()
+		var p Parser
+		v, err := p.ParseWithArena(a, jsonInput)
+		if err != nil {
+			t.Fatalf("iteration %d: parse: %s", i, err)
+		}
+		forceGC()
+
+		for key, want := range expected {
+			got := v.Get(key)
+			if got == nil {
+				t.Fatalf("iteration %d: key %q is nil", i, key)
+			}
+			sb, err := got.StringBytes()
+			if err != nil {
+				t.Fatalf("iteration %d: key %q StringBytes: %s", i, key, err)
+			}
+			if string(sb) != want {
+				t.Fatalf("iteration %d: key %q got %q, want %q", i, key, string(sb), want)
+			}
+		}
+
+		marshaled := string(v.MarshalTo(nil))
+		if len(marshaled) == 0 {
+			t.Fatalf("iteration %d: MarshalTo returned empty", i)
+		}
+		runtime.KeepAlive(a)
+	}
+}
+
+func TestArenaGCSafety_MergeValues_ScalarReplacement(t *testing.T) {
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	for i := 0; i < gcTestIterations; i++ {
+		a := arena.NewMonotonicArena()
+		var p Parser
+
+		left, err := p.ParseWithArena(a, fmt.Sprintf(`{"n":%d,"s":"old_%d","b":true}`, i, i))
+		if err != nil {
+			t.Fatalf("iteration %d: parse left: %s", i, err)
+		}
+		right, err := p.ParseWithArena(a, fmt.Sprintf(`{"n":%d,"s":"new_%d","b":false}`, i+1000, i))
+		if err != nil {
+			t.Fatalf("iteration %d: parse right: %s", i, err)
+		}
+		merged, _, err := MergeValues(a, left, right)
+		if err != nil {
+			t.Fatalf("iteration %d: merge: %s", i, err)
+		}
+		forceGC()
+
+		n, _ := merged.Get("n").Float64()
+		if n != float64(i+1000) {
+			t.Fatalf("iteration %d: number got %v, want %v", i, n, i+1000)
+		}
+
+		sb, _ := merged.Get("s").StringBytes()
+		expectedStr := fmt.Sprintf("new_%d", i)
+		if string(sb) != expectedStr {
+			t.Fatalf("iteration %d: string got %q, want %q", i, string(sb), expectedStr)
+		}
+
+		bVal := merged.Get("b")
+		if bVal.Type() != TypeFalse {
+			t.Fatalf("iteration %d: bool got %s, want TypeFalse", i, bVal.Type())
+		}
+		runtime.KeepAlive(a)
+	}
+}
+
+func TestArenaGCSafety_MergeValues_RecursiveObjects(t *testing.T) {
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	for i := 0; i < gcTestIterations; i++ {
+		a := arena.NewMonotonicArena()
+		var p Parser
+
+		leftJSON := fmt.Sprintf(`{"a":{"x":%d,"y":"old_%d"},"b":{"m":"keep"}}`, i, i)
+		rightJSON := fmt.Sprintf(`{"a":{"y":"new_%d","z":%d},"b":{"n":"added"}}`, i, i*10)
+
+		left, err := p.ParseWithArena(a, leftJSON)
+		if err != nil {
+			t.Fatalf("iteration %d: parse left: %s", i, err)
+		}
+		right, err := p.ParseWithArena(a, rightJSON)
+		if err != nil {
+			t.Fatalf("iteration %d: parse right: %s", i, err)
+		}
+		merged, _, err := MergeValues(a, left, right)
+		if err != nil {
+			t.Fatalf("iteration %d: merge: %s", i, err)
+		}
+		forceGC()
+
+		aObj := merged.Get("a")
+		if aObj == nil {
+			t.Fatalf("iteration %d: key 'a' is nil", i)
+		}
+		x, _ := aObj.Get("x").Int()
+		if x != i {
+			t.Fatalf("iteration %d: a.x got %d, want %d", i, x, i)
+		}
+		yb, _ := aObj.Get("y").StringBytes()
+		expectedY := fmt.Sprintf("new_%d", i)
+		if string(yb) != expectedY {
+			t.Fatalf("iteration %d: a.y got %q, want %q", i, string(yb), expectedY)
+		}
+		z, _ := aObj.Get("z").Int()
+		if z != i*10 {
+			t.Fatalf("iteration %d: a.z got %d, want %d", i, z, i*10)
+		}
+
+		bObj := merged.Get("b")
+		mb, _ := bObj.Get("m").StringBytes()
+		if string(mb) != "keep" {
+			t.Fatalf("iteration %d: b.m got %q, want %q", i, string(mb), "keep")
+		}
+		nb, _ := bObj.Get("n").StringBytes()
+		if string(nb) != "added" {
+			t.Fatalf("iteration %d: b.n got %q, want %q", i, string(nb), "added")
+		}
+
+		marshaled := string(merged.MarshalTo(nil))
+		if len(marshaled) == 0 {
+			t.Fatalf("iteration %d: MarshalTo returned empty", i)
+		}
+		runtime.KeepAlive(a)
+	}
+}
+
+func TestArenaGCSafety_MergeValues_EmptyArrays(t *testing.T) {
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	for i := 0; i < gcTestIterations; i++ {
+		a := arena.NewMonotonicArena()
+		var p Parser
+
+		left, err := p.ParseWithArena(a, `[]`)
+		if err != nil {
+			t.Fatalf("iteration %d: parse left: %s", i, err)
+		}
+		right, err := p.ParseWithArena(a, fmt.Sprintf(`[%d,%d,%d]`, i, i+1, i+2))
+		if err != nil {
+			t.Fatalf("iteration %d: parse right: %s", i, err)
+		}
+		merged, changed, err := MergeValues(a, left, right)
+		if err != nil {
+			t.Fatalf("iteration %d: merge empty+full: %s", i, err)
+		}
+		if !changed {
+			t.Fatalf("iteration %d: expected changed=true for empty left", i)
+		}
+		forceGC()
+		arr := merged.GetArray()
+		if len(arr) != 3 {
+			t.Fatalf("iteration %d: expected 3 items, got %d", i, len(arr))
+		}
+		n, _ := arr[0].Int()
+		if n != i {
+			t.Fatalf("iteration %d: arr[0] got %d, want %d", i, n, i)
+		}
+
+		left2, err := p.ParseWithArena(a, fmt.Sprintf(`[%d,%d]`, i*10, i*10+1))
+		if err != nil {
+			t.Fatalf("iteration %d: parse left2: %s", i, err)
+		}
+		right2, err := p.ParseWithArena(a, `[]`)
+		if err != nil {
+			t.Fatalf("iteration %d: parse right2: %s", i, err)
+		}
+		merged2, changed2, err := MergeValues(a, left2, right2)
+		if err != nil {
+			t.Fatalf("iteration %d: merge full+empty: %s", i, err)
+		}
+		if changed2 {
+			t.Fatalf("iteration %d: expected changed=false for empty right", i)
+		}
+		forceGC()
+		arr2 := merged2.GetArray()
+		if len(arr2) != 2 {
+			t.Fatalf("iteration %d: expected 2 items, got %d", i, len(arr2))
+		}
+		runtime.KeepAlive(a)
+	}
+}
+
+func TestArenaGCSafety_MergeValues_NullHandling(t *testing.T) {
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	for i := 0; i < gcTestIterations; i++ {
+		a := arena.NewMonotonicArena()
+		var p Parser
+
+		left, err := p.ParseWithArena(a, fmt.Sprintf(`{"nested":{"val":%d}}`, i))
+		if err != nil {
+			t.Fatalf("iteration %d: parse left: %s", i, err)
+		}
+		right, err := p.ParseWithArena(a, `null`)
+		if err != nil {
+			t.Fatalf("iteration %d: parse right: %s", i, err)
+		}
+		merged, changed, err := MergeValues(a, left, right)
+		if err != nil {
+			t.Fatalf("iteration %d: merge: %s", i, err)
+		}
+		if changed {
+			t.Fatalf("iteration %d: expected changed=false for null right on object left", i)
+		}
+		forceGC()
+
+		nested := merged.Get("nested")
+		if nested == nil {
+			t.Fatalf("iteration %d: nested is nil", i)
+		}
+		val, _ := nested.Get("val").Int()
+		if val != i {
+			t.Fatalf("iteration %d: nested.val got %d, want %d", i, val, i)
+		}
+		runtime.KeepAlive(a)
+	}
+}
+
+func TestArenaGCSafety_ArenaBufferGrowth(t *testing.T) {
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	const iterations = 100
+
+	for i := 0; i < iterations; i++ {
+		// Use a small buffer size to force multiple arena buffers
+		a := arena.NewMonotonicArena(arena.WithMinBufferSize(1024))
+		var p Parser
+
+		buf := []byte(`[`)
+		for j := 0; j < 200; j++ {
+			if j > 0 {
+				buf = append(buf, ',')
+			}
+			entry := fmt.Sprintf(`{"id":%d,"name":"item_%d_%d","value":"val_%d_%d_padding_to_increase_size"}`,
+				j, i, j, i, j)
+			buf = append(buf, entry...)
+		}
+		buf = append(buf, ']')
+
+		v, err := p.ParseBytesWithArena(a, buf)
+		if err != nil {
+			t.Fatalf("iteration %d: parse: %s", i, err)
+		}
+		buf = nil
+		forceGC()
+
+		arr := v.GetArray()
+		if len(arr) != 200 {
+			t.Fatalf("iteration %d: expected 200 items, got %d", i, len(arr))
+		}
+
+		for _, idx := range []int{0, 1, 50, 99, 150, 199} {
+			elem := arr[idx]
+			id, _ := elem.Get("id").Int()
+			if id != idx {
+				t.Fatalf("iteration %d: arr[%d].id got %d, want %d", i, idx, id, idx)
+			}
+			name, _ := elem.Get("name").StringBytes()
+			expectedName := fmt.Sprintf("item_%d_%d", i, idx)
+			if string(name) != expectedName {
+				t.Fatalf("iteration %d: arr[%d].name got %q, want %q", i, idx, string(name), expectedName)
+			}
+		}
+
+		marshaled := v.MarshalTo(nil)
+		if len(marshaled) == 0 {
+			t.Fatalf("iteration %d: MarshalTo returned empty", i)
+		}
+		runtime.KeepAlive(a)
+	}
+}
+
+func TestArenaGCSafety_ObjectSet_Overwrite(t *testing.T) {
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	for i := 0; i < gcTestIterations; i++ {
+		a := arena.NewMonotonicArena()
+		obj := ObjectValue(a)
+
+		key := heapString("key", i)
+		firstVal := StringValue(a, heapString("first", i))
+		obj.Set(a, key, firstVal)
+
+		secondVal := StringValue(a, heapString("second", i))
+		obj.Set(a, key, secondVal)
+
+		forceGC()
+
+		got := obj.Get(key)
+		if got == nil {
+			t.Fatalf("iteration %d: key not found after overwrite", i)
+		}
+		sb, _ := got.StringBytes()
+		expected := heapString("second", i)
+		if string(sb) != expected {
+			t.Fatalf("iteration %d: got %q, want %q", i, string(sb), expected)
+		}
+
+		o, _ := obj.Object()
+		if o.Len() != 1 {
+			t.Fatalf("iteration %d: expected 1 key, got %d", i, o.Len())
+		}
+		runtime.KeepAlive(a)
+	}
+}
+
+func TestArenaGCSafety_NaNInf(t *testing.T) {
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"NaN", "NaN"},
+		{"nan", "nan"},
+		{"Inf", "Inf"},
+		{"-Inf", "-Inf"},
+		{"+Inf", "+Inf"},
+	}
+
+	for i := 0; i < gcTestIterations; i++ {
+		a := arena.NewMonotonicArena()
+		var p Parser
+
+		for _, tc := range cases {
+			v, err := p.ParseWithArena(a, tc.input)
+			if err != nil {
+				t.Fatalf("iteration %d: parse %q: %s", i, tc.input, err)
+			}
+			forceGC()
+
+			if v.Type() != TypeNumber {
+				t.Fatalf("iteration %d: %q type got %s, want TypeNumber", i, tc.input, v.Type())
+			}
+			got := v.String()
+			if got != tc.want {
+				t.Fatalf("iteration %d: %q String() got %q, want %q", i, tc.input, got, tc.want)
+			}
+		}
+		runtime.KeepAlive(a)
+	}
+}
+
+func TestArenaGCSafety_EmptyStringValues(t *testing.T) {
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	for i := 0; i < gcTestIterations; i++ {
+		a := arena.NewMonotonicArena()
+		var p Parser
+
+		v, err := p.ParseWithArena(a, `{"empty":"","arr":["",""],"nested":{"also_empty":""}}`)
+		if err != nil {
+			t.Fatalf("iteration %d: parse: %s", i, err)
+		}
+		forceGC()
+
+		sb, _ := v.Get("empty").StringBytes()
+		if len(sb) != 0 {
+			t.Fatalf("iteration %d: empty got %q, want empty", i, string(sb))
+		}
+
+		arr := v.GetArray("arr")
+		if len(arr) != 2 {
+			t.Fatalf("iteration %d: arr length got %d, want 2", i, len(arr))
+		}
+		for j, elem := range arr {
+			sb, _ := elem.StringBytes()
+			if len(sb) != 0 {
+				t.Fatalf("iteration %d: arr[%d] got %q, want empty", i, j, string(sb))
+			}
+		}
+
+		sb, _ = v.Get("nested", "also_empty").StringBytes()
+		if len(sb) != 0 {
+			t.Fatalf("iteration %d: nested.also_empty got %q, want empty", i, string(sb))
+		}
+
+		got := string(v.MarshalTo(nil))
+		expected := `{"empty":"","arr":["",""],"nested":{"also_empty":""}}`
+		if got != expected {
+			t.Fatalf("iteration %d: marshal got %q, want %q", i, got, expected)
+		}
+		runtime.KeepAlive(a)
+	}
+}
+
+//go:noinline
+func buildLargeEscapedJSON(i int) string {
+	s := `{"escaped":"`
+	for j := 0; j < 100; j++ {
+		s += fmt.Sprintf(`\t\n\r\\\/\b\f\u00%02X`, 0x41+(j%26))
+	}
+	s += fmt.Sprintf(`_%d"}`, i)
+	return s
+}
+
+func TestArenaGCSafety_LargeEscapedStrings(t *testing.T) {
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	for i := 0; i < gcTestIterations; i++ {
+		a := arena.NewMonotonicArena()
+		var p Parser
+
+		input := buildLargeEscapedJSON(i)
+		v, err := p.ParseWithArena(a, input)
+		if err != nil {
+			t.Fatalf("iteration %d: parse: %s", i, err)
+		}
+		input = ""
+		_ = input
+		forceGC()
+
+		val := v.Get("escaped")
+		if val == nil {
+			t.Fatalf("iteration %d: escaped is nil", i)
+		}
+		sb, _ := val.StringBytes()
+		suffix := fmt.Sprintf("_%d", i)
+		if len(sb) == 0 || string(sb[len(sb)-len(suffix):]) != suffix {
+			t.Fatalf("iteration %d: string doesn't end with %q", i, suffix)
+		}
+		if len(sb) < 100 {
+			t.Fatalf("iteration %d: decoded string too short: %d", i, len(sb))
+		}
+
+		marshaled := string(v.MarshalTo(nil))
+		if len(marshaled) == 0 {
+			t.Fatalf("iteration %d: MarshalTo returned empty", i)
+		}
+		runtime.KeepAlive(a)
+	}
+}
+
+func TestArenaGCSafety_ManyObjectKeys(t *testing.T) {
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	const iterations = 200
+	const numKeys = 200
+
+	for i := 0; i < iterations; i++ {
+		a := arena.NewMonotonicArena()
+		var p Parser
+
+		buf := []byte(`{`)
+		for j := 0; j < numKeys; j++ {
+			if j > 0 {
+				buf = append(buf, ',')
+			}
+			entry := fmt.Sprintf(`"key_%d_%d":"val_%d_%d"`, i, j, i, j)
+			buf = append(buf, entry...)
+		}
+		buf = append(buf, '}')
+
+		v, err := p.ParseBytesWithArena(a, buf)
+		if err != nil {
+			t.Fatalf("iteration %d: parse: %s", i, err)
+		}
+		buf = nil
+		forceGC()
+
+		o, _ := v.Object()
+		if o.Len() != numKeys {
+			t.Fatalf("iteration %d: expected %d keys, got %d", i, numKeys, o.Len())
+		}
+
+		for _, idx := range []int{0, 1, 50, 99, 150, 199} {
+			key := fmt.Sprintf("key_%d_%d", i, idx)
+			val := v.Get(key)
+			if val == nil {
+				t.Fatalf("iteration %d: key %q is nil", i, key)
+			}
+			sb, _ := val.StringBytes()
+			expected := fmt.Sprintf("val_%d_%d", i, idx)
+			if string(sb) != expected {
+				t.Fatalf("iteration %d: key %q got %q, want %q", i, key, string(sb), expected)
+			}
+		}
+
+		marshaled := v.MarshalTo(nil)
+		if len(marshaled) == 0 {
+			t.Fatalf("iteration %d: MarshalTo returned empty", i)
+		}
+		runtime.KeepAlive(a)
 	}
 }
