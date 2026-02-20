@@ -123,14 +123,18 @@ func DeduplicateObjectKeysRecursively(v *Value) {
 	}
 	o, _ := v.Object()
 	seen := make(map[string]struct{})
-	o.Visit(func(k []byte, v *Value) {
-		key := string(k)
-		if _, ok := seen[key]; ok {
-			o.Del(key)
-			return
-		} else {
-			seen[key] = struct{}{}
+	n := 0
+	for _, kv := range o.kvs {
+		if _, ok := seen[kv.k]; ok {
+			continue
 		}
-		DeduplicateObjectKeysRecursively(v)
-	})
+		seen[kv.k] = struct{}{}
+		o.kvs[n] = kv
+		n++
+		DeduplicateObjectKeysRecursively(kv.v)
+	}
+	for i := n; i < len(o.kvs); i++ {
+		o.kvs[i] = nil // clear trailing slots for GC
+	}
+	o.kvs = o.kvs[:n]
 }

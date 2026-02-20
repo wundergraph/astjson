@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/wundergraph/astjson/fastfloat"
 	"github.com/wundergraph/go-arena"
@@ -453,7 +454,9 @@ func unescapeStringBestEffort(a arena.Arena, s string) string {
 			}
 			s = s[4:]
 			if !utf16.IsSurrogate(rune(x)) {
-				b = arena.SliceAppend(a, b, []byte(string(rune(x)))...)
+				var buf [utf8.UTFMax]byte
+				n := utf8.EncodeRune(buf[:], rune(x))
+				b = arena.SliceAppend(a, b, buf[:n]...)
 				break
 			}
 
@@ -471,7 +474,9 @@ func unescapeStringBestEffort(a arena.Arena, s string) string {
 				break
 			}
 			r := utf16.DecodeRune(rune(x), rune(x1))
-			b = arena.SliceAppend(a, b, []byte(string(r))...)
+			var buf [utf8.UTFMax]byte
+			rn := utf8.EncodeRune(buf[:], r)
+			b = arena.SliceAppend(a, b, buf[:rn]...)
 			s = s[6:]
 		default:
 			// Unknown escape sequence. Just store it unchanged.

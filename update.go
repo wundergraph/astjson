@@ -16,6 +16,7 @@ func (o *Object) Del(key string) {
 	for i, kv := range o.kvs {
 		if kv.k == key {
 			o.kvs = append(o.kvs[:i], o.kvs[i+1:]...)
+			o.kvs[:len(o.kvs)+1][len(o.kvs)] = nil // clear hidden slot for GC
 			return
 		}
 	}
@@ -36,6 +37,7 @@ func (v *Value) Del(key string) {
 			return
 		}
 		v.a = append(v.a[:n], v.a[n+1:]...)
+		v.a[:len(v.a)+1][len(v.a)] = nil // clear hidden slot for GC
 	}
 }
 

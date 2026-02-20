@@ -97,6 +97,14 @@ func TestDeduplicateObjectKeysRecursivelyArray(t *testing.T) {
 	require.Equal(t, 1, arr[0].GetObject().Len())
 }
 
+func TestDeduplicateObjectKeysRecursivelyTripleDuplicate(t *testing.T) {
+	v := MustParse(`{"a":1,"a":2,"a":3}`)
+	DeduplicateObjectKeysRecursively(v)
+	o := v.GetObject()
+	require.Equal(t, 1, o.Len())
+	require.Equal(t, "1", o.Get("a").String())
+}
+
 func TestStringValueBytesNilArena(t *testing.T) {
 	b := []byte("hello")
 	v := StringValueBytes(nil, b)
