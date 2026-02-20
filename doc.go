@@ -49,6 +49,40 @@ causing a use-after-free. The library prevents this by:
 When using heap mode (nil arena), all Values live on the heap where the GC can
 see them, so heap string references are safe.
 
+# Mixing Arena and Heap Values
+
+The noscan property extends beyond string data to all pointer fields within
+arena-allocated structs. Because arena buffers are raw []byte allocations, the
+GC does not trace pointer fields such as Value.a ([]*Value), Object.kvs ([]*kv),
+or kv.v (*Value) that live inside arena memory.
+
+This means storing a heap-allocated *Value into an arena-allocated container is
+unsafe if no other GC-visible reference to that heap Value exists. The GC may
+collect the heap Value since it cannot see the reference in arena memory,
+resulting in a use-after-free.
+
+Affected APIs (when the container is arena-allocated and the value is
+heap-allocated):
+
+  - [Object.Set] / [Value.Set]: the value argument is stored directly.
+  - [Value.SetArrayItem]: the value argument is stored directly.
+  - [AppendToArray] / [Value.AppendArrayItems]: elements are stored directly.
+  - [MergeValues] / [MergeValuesWithPath]: values from b may be stored in a.
+
+Safe patterns:
+
+  - All values from a single arena: always safe.
+  - All values on the heap (nil arena): always safe.
+  - Package-level singletons (valueTrue, valueFalse, valueNull, [NullValue]):
+    always safe because they are GC-visible global variables.
+
+Unsafe pattern:
+
+	arenaObj := ObjectValue(a)            // arena-allocated
+	heapVal := StringValue(nil, "hello")  // heap-allocated
+	arenaObj.Set(a, "key", heapVal)       // UNSAFE if heapVal has no other reference
+	heapVal = nil                         // GC may now collect the heap Value
+
 # Value Constructors
 
 Use [StringValue], [IntValue], [FloatValue], [NumberValue], [TrueValue],

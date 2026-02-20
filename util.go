@@ -45,6 +45,10 @@ var (
 
 // AppendToArray appends value to the end of array. Does nothing if array is
 // not of TypeArray. The arena a is used to grow the array's backing slice.
+//
+// GC safety: when array is arena-allocated (a is non-nil), value must also be
+// arena-allocated from the same arena, or be a package-level singleton.
+// See the package documentation section "Mixing Arena and Heap Values".
 func AppendToArray(a arena.Arena, array, value *Value) {
 	if array.Type() != TypeArray {
 		return
@@ -58,7 +62,8 @@ func AppendToArray(a arena.Arena, array, value *Value) {
 // must have at least one element.
 //
 // Object keys created along the path are copied onto the arena when a is
-// non-nil, ensuring GC safety.
+// non-nil, ensuring GC safety. The same arena/heap mixing rules as
+// [Object.Set] apply to the value argument.
 func SetValue(a arena.Arena, v *Value, value *Value, path ...string) {
 	for i := 0; i < len(path)-1; i++ {
 		parent := v
@@ -94,6 +99,10 @@ func ValueIsNonNull(v *Value) bool {
 // AppendArrayItems appends all elements from right into v. Both v and right
 // must be TypeArray; does nothing otherwise. The arena a is used to grow v's
 // backing slice.
+//
+// GC safety: when v is arena-allocated (a is non-nil), right and its elements
+// must also be arena-allocated from the same arena. See the package
+// documentation section "Mixing Arena and Heap Values".
 func (v *Value) AppendArrayItems(a arena.Arena, right *Value) {
 	if v.t != TypeArray || right.t != TypeArray {
 		return
@@ -122,6 +131,8 @@ func DeduplicateObjectKeysRecursively(v *Value) {
 		return
 	}
 	o, _ := v.Object()
+	// Heap-allocated: maps cannot be placed on the arena. The allocation is
+	// bounded by the number of unique keys at each object level.
 	seen := make(map[string]struct{})
 	n := 0
 	for _, kv := range o.kvs {

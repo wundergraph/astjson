@@ -1149,3 +1149,51 @@ func TestArenaGCSafety_StringValueBytes_HeapInput(t *testing.T) {
 		}
 	}
 }
+
+// TestArenaGCSafety_MixingHeapAndArenaValues_Demonstration documents the unsafe
+// pattern of storing a heap-allocated *Value into an arena-allocated container.
+//
+// Arena buffers are []byte allocations (noscan). The GC does not trace pointer
+// fields within arena memory. If a heap-allocated *Value is stored in an
+// arena-allocated []*kv or []*Value slice via Object.Set / SetArrayItem, and no
+// other GC-visible reference keeps that heap *Value alive, the GC may collect it.
+//
+// This test is skipped because it demonstrates undefined behavior that may or
+// may not manifest on a given run depending on GC timing and heap layout.
+func TestArenaGCSafety_MixingHeapAndArenaValues_Demonstration(t *testing.T) {
+	t.Skip("demonstrates unsafe heap/arena mixing — undefined behavior, not guaranteed to fail")
+
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	for i := 0; i < gcTestIterations; i++ {
+		a := arena.NewMonotonicArena()
+
+		// Arena-allocated container
+		obj := ObjectValue(a)
+
+		// Heap-allocated value (nil arena)
+		heapVal := StringValue(nil, heapString("unsafe", i))
+
+		// Store heap *Value into arena-allocated kv slice.
+		// The kv.v pointer lives inside a []byte buffer (noscan).
+		// The GC cannot see this reference.
+		obj.Set(a, "key", heapVal)
+
+		// Drop the only GC-visible reference to heapVal.
+		heapVal = nil //nolint:ineffassign
+
+		// Force GC — heapVal may be collected since the only reference
+		// to it is inside arena memory (noscan).
+		forceGC()
+
+		// This read may return corrupted data or crash if the GC
+		// collected the heap Value.
+		got := obj.Get("key")
+		expected := heapString("unsafe", i)
+		sb, _ := got.StringBytes()
+		if string(sb) != expected {
+			t.Fatalf("iteration %d: got %q, want %q (heap value may have been collected)", i, string(sb), expected)
+		}
+	}
+}
