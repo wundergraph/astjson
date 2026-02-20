@@ -75,6 +75,8 @@ Safe patterns:
   - All values on the heap (nil arena): always safe.
   - Package-level singletons (valueTrue, valueFalse, valueNull, [NullValue]):
     always safe because they are GC-visible global variables.
+  - Using [DeepCopy] to copy a heap value onto the arena before storing it:
+    always safe because the copy lives entirely in arena memory.
 
 Unsafe pattern:
 
@@ -82,6 +84,13 @@ Unsafe pattern:
 	heapVal := StringValue(nil, "hello")  // heap-allocated
 	arenaObj.Set(a, "key", heapVal)       // UNSAFE if heapVal has no other reference
 	heapVal = nil                         // GC may now collect the heap Value
+
+Safe pattern using DeepCopy:
+
+	arenaObj := ObjectValue(a)
+	heapVal := StringValue(nil, "hello")  // heap-allocated
+	arenaObj.Set(a, "key", DeepCopy(a, heapVal))  // safe: copy lives in a
+	heapVal = nil                                  // GC collects original, copy is in a
 
 # Value Constructors
 

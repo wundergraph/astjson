@@ -48,6 +48,7 @@ var (
 //
 // GC safety: when array is arena-allocated (a is non-nil), value must also be
 // arena-allocated from the same arena, or be a package-level singleton.
+// Use [DeepCopy] on value before calling if value is heap-allocated.
 // See the package documentation section "Mixing Arena and Heap Values".
 func AppendToArray(a arena.Arena, array, value *Value) {
 	if array.Type() != TypeArray {
@@ -96,13 +97,67 @@ func ValueIsNonNull(v *Value) bool {
 	return true
 }
 
+// DeepCopy returns a deep copy of v allocated entirely on arena a.
+// All string data, slice backing arrays, child Values, and object keys
+// are arena-allocated, making the result self-contained within a.
+//
+// Use DeepCopy when inserting a heap-parsed *Value into an arena-allocated
+// container (via [Object.Set], [Value.SetArrayItem], [AppendArrayItems], etc.)
+// to prevent the GC from collecting the value while the arena container still
+// references it. Example:
+//
+//	heapVal, _ := Parse(`"hello"`)                       // heap-allocated
+//	arenaObj.Set(a, "key", DeepCopy(a, heapVal))         // safe: copy lives in a
+//
+// When a is nil (heap mode), DeepCopy returns v unchanged. In heap mode the GC
+// traces all references normally, so no copy is needed.
+func DeepCopy(a arena.Arena, v *Value) *Value {
+	if v == nil || a == nil {
+		return v
+	}
+	cp := arena.Allocate[Value](a)
+	cp.t = v.t
+	switch v.t {
+	case TypeString, TypeNumber:
+		cp.s = arenaString(a, v.s)
+	case TypeObject:
+		cp.o = deepCopyObject(a, &v.o)
+	case TypeArray:
+		if len(v.a) > 0 {
+			cp.a = arena.AllocateSlice[*Value](a, len(v.a), len(v.a))
+			for i, item := range v.a {
+				cp.a[i] = DeepCopy(a, item)
+			}
+		}
+	// TypeTrue, TypeFalse, TypeNull: only t is needed, already set above.
+	}
+	return cp
+}
+
+func deepCopyObject(a arena.Arena, o *Object) Object {
+	var result Object
+	if len(o.kvs) == 0 {
+		return result
+	}
+	result.kvs = arena.AllocateSlice[*kv](a, len(o.kvs), len(o.kvs))
+	for i, entry := range o.kvs {
+		newKv := arena.Allocate[kv](a)
+		newKv.k = arenaString(a, entry.k)
+		newKv.keyUnescaped = true
+		newKv.v = DeepCopy(a, entry.v)
+		result.kvs[i] = newKv
+	}
+	return result
+}
+
 // AppendArrayItems appends all elements from right into v. Both v and right
 // must be TypeArray; does nothing otherwise. The arena a is used to grow v's
 // backing slice.
 //
 // GC safety: when v is arena-allocated (a is non-nil), right and its elements
-// must also be arena-allocated from the same arena. See the package
-// documentation section "Mixing Arena and Heap Values".
+// must also be arena-allocated from the same arena. Use [DeepCopy] on right
+// before calling if right is heap-allocated. See the package documentation
+// section "Mixing Arena and Heap Values".
 func (v *Value) AppendArrayItems(a arena.Arena, right *Value) {
 	if v.t != TypeArray || right.t != TypeArray {
 		return

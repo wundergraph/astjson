@@ -1180,53 +1180,142 @@ func TestArenaGCSafety_StringValueBytes_HeapInput(t *testing.T) {
 	}
 }
 
-// TestArenaGCSafety_MixingHeapAndArenaValues_Demonstration documents the unsafe
-// pattern of storing a heap-allocated *Value into an arena-allocated container.
-//
-// Arena buffers are []byte allocations (noscan). The GC does not trace pointer
-// fields within arena memory. If a heap-allocated *Value is stored in an
-// arena-allocated []*kv or []*Value slice via Object.Set / SetArrayItem, and no
-// other GC-visible reference keeps that heap *Value alive, the GC may collect it.
-//
-// This test is skipped because it demonstrates undefined behavior that may or
-// may not manifest on a given run depending on GC timing and heap layout.
-func TestArenaGCSafety_MixingHeapAndArenaValues_Demonstration(t *testing.T) {
-	t.Skip("demonstrates unsafe heap/arena mixing — undefined behavior, not guaranteed to fail")
-
+// TestArenaGCSafety_DeepCopy_ObjectSet verifies that DeepCopy makes it safe to
+// store a heap-allocated *Value into an arena-allocated object via Object.Set.
+// Without DeepCopy the kv.v pointer lives in noscan arena memory, making the
+// heap Value invisible to the GC. With DeepCopy the stored value is fully
+// arena-allocated.
+func TestArenaGCSafety_DeepCopy_ObjectSet(t *testing.T) {
 	old := debug.SetGCPercent(1)
 	defer debug.SetGCPercent(old)
 
 	for i := 0; i < gcTestIterations; i++ {
 		a := arena.NewMonotonicArena()
 
-		// Arena-allocated container
 		obj := ObjectValue(a)
+		heapVal := StringValue(nil, heapString("safe", i))
 
-		// Heap-allocated value (nil arena)
-		heapVal := StringValue(nil, heapString("unsafe", i))
+		// DeepCopy copies heapVal into arena a before storing.
+		obj.Set(a, "key", DeepCopy(a, heapVal))
 
-		// Store heap *Value into arena-allocated kv slice.
-		// The kv.v pointer lives inside a []byte buffer (noscan).
-		// The GC cannot see this reference.
-		obj.Set(a, "key", heapVal)
-
-		// Drop the only GC-visible reference to heapVal.
+		// Drop the only external reference to heapVal.
 		heapVal = nil //nolint:ineffassign
-
-		// Force GC — heapVal may be collected since the only reference
-		// to it is inside arena memory (noscan).
 		forceGC()
 
-		// This read may return corrupted data or crash if the GC
-		// collected the heap Value.
 		got := obj.Get("key")
-		expected := heapString("unsafe", i)
+		expected := heapString("safe", i)
 		sb, _ := got.StringBytes()
 		if string(sb) != expected {
-			t.Fatalf("iteration %d: got %q, want %q (heap value may have been collected)", i, string(sb), expected)
+			t.Fatalf("iteration %d: got %q, want %q", i, string(sb), expected)
+		}
+		marshaled := string(obj.MarshalTo(nil))
+		if len(marshaled) == 0 {
+			t.Fatalf("iteration %d: MarshalTo returned empty", i)
 		}
 		runtime.KeepAlive(a)
 	}
+}
+
+// TestArenaGCSafety_DeepCopy_SetArrayItem verifies that DeepCopy makes it safe
+// to store a heap-allocated *Value into an arena-allocated array via SetArrayItem.
+func TestArenaGCSafety_DeepCopy_SetArrayItem(t *testing.T) {
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	for i := 0; i < gcTestIterations; i++ {
+		a := arena.NewMonotonicArena()
+
+		arr := ArrayValue(a)
+		heapVal := IntValue(nil, i)
+
+		arr.SetArrayItem(a, 0, DeepCopy(a, heapVal))
+
+		heapVal = nil //nolint:ineffassign
+		forceGC()
+
+		items, _ := arr.Array()
+		if len(items) != 1 {
+			t.Fatalf("iteration %d: want 1 item, got %d", i, len(items))
+		}
+		got := items[0].GetInt()
+		if got != i {
+			t.Fatalf("iteration %d: got %d, want %d", i, got, i)
+		}
+		marshaled := string(arr.MarshalTo(nil))
+		if len(marshaled) == 0 {
+			t.Fatalf("iteration %d: MarshalTo returned empty", i)
+		}
+		runtime.KeepAlive(a)
+	}
+}
+
+// TestArenaGCSafety_DeepCopy_NestedObject verifies that DeepCopy recursively
+// copies nested objects and arrays onto the arena.
+func TestArenaGCSafety_DeepCopy_NestedObject(t *testing.T) {
+	old := debug.SetGCPercent(1)
+	defer debug.SetGCPercent(old)
+
+	for i := 0; i < gcTestIterations; i++ {
+		a := arena.NewMonotonicArena()
+
+		// Build a nested heap value: {"name": "...", "scores": [1, 2, 3]}
+		heapObj := ObjectValue(nil)
+		heapObj.Set(nil, "name", StringValue(nil, heapString("nested", i)))
+		heapArr := ArrayValue(nil)
+		heapArr.SetArrayItem(nil, 0, IntValue(nil, i))
+		heapArr.SetArrayItem(nil, 1, IntValue(nil, i+1))
+		heapArr.SetArrayItem(nil, 2, IntValue(nil, i+2))
+		heapObj.Set(nil, "scores", heapArr)
+
+		arenaContainer := ObjectValue(a)
+		arenaContainer.Set(a, "data", DeepCopy(a, heapObj))
+
+		// Drop all heap references.
+		heapObj = nil //nolint:ineffassign
+		heapArr = nil //nolint:ineffassign
+		forceGC()
+
+		got := arenaContainer.Get("data", "name")
+		expected := heapString("nested", i)
+		sb, _ := got.StringBytes()
+		if string(sb) != expected {
+			t.Fatalf("iteration %d: name got %q, want %q", i, string(sb), expected)
+		}
+
+		scores := arenaContainer.GetArray("data", "scores")
+		if len(scores) != 3 {
+			t.Fatalf("iteration %d: want 3 scores, got %d", i, len(scores))
+		}
+		if scores[0].GetInt() != i || scores[1].GetInt() != i+1 || scores[2].GetInt() != i+2 {
+			t.Fatalf("iteration %d: unexpected scores", i)
+		}
+
+		marshaled := string(arenaContainer.MarshalTo(nil))
+		if len(marshaled) == 0 {
+			t.Fatalf("iteration %d: MarshalTo returned empty", i)
+		}
+		runtime.KeepAlive(a)
+	}
+}
+
+// TestArenaGCSafety_DeepCopy_NilArena verifies that DeepCopy(nil, v) is a
+// no-op and returns v unchanged.
+func TestArenaGCSafety_DeepCopy_NilArena(t *testing.T) {
+	v := StringValue(nil, "hello")
+	got := DeepCopy(nil, v)
+	if got != v {
+		t.Fatal("DeepCopy(nil, v) must return v unchanged")
+	}
+}
+
+// TestArenaGCSafety_DeepCopy_NilValue verifies that DeepCopy(a, nil) returns nil.
+func TestArenaGCSafety_DeepCopy_NilValue(t *testing.T) {
+	a := arena.NewMonotonicArena()
+	got := DeepCopy(a, nil)
+	if got != nil {
+		t.Fatal("DeepCopy(a, nil) must return nil")
+	}
+	runtime.KeepAlive(a)
 }
 
 func TestArenaGCSafety_UnescapeAllBranches(t *testing.T) {
