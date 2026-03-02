@@ -542,16 +542,28 @@ func BenchmarkSTMergeValuesObject(b *testing.B) {
 	b.Run("small", func(b *testing.B) {
 		a := arena.NewMonotonicArena(arena.WithMinBufferSize(4096))
 		var p Parser
-		aVal, _ := p.ParseWithArena(a, `{"x":1,"y":2,"z":3}`)
-		bVal, _ := p.ParseWithArena(a, `{"y":20,"w":4}`)
+		aVal, err := p.ParseWithArena(a, `{"x":1,"y":2,"z":3}`)
+		if err != nil {
+			b.Fatal(err)
+		}
+		bVal, err := p.ParseWithArena(a, `{"y":20,"w":4}`)
+		if err != nil {
+			b.Fatal(err)
+		}
 		aBytes := []byte(aVal.String())
 		bBytes := []byte(bVal.String())
 		a.Reset()
 		b.ReportAllocs()
 		b.ResetTimer()
 		for b.Loop() {
-			av, _ := p.ParseBytesWithArena(a, aBytes)
-			bv, _ := p.ParseBytesWithArena(a, bBytes)
+			av, err := p.ParseBytesWithArena(a, aBytes)
+			if err != nil {
+				b.Fatal(err)
+			}
+			bv, err := p.ParseBytesWithArena(a, bBytes)
+			if err != nil {
+				b.Fatal(err)
+			}
 			v, _, err := MergeValues(a, av, bv)
 			if err != nil {
 				b.Fatal(err)
@@ -571,8 +583,14 @@ func BenchmarkSTMergeValuesObject(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for b.Loop() {
-			av, _ := p.ParseBytesWithArena(a, aBytes)
-			bv, _ := p.ParseBytesWithArena(a, bBytes)
+			av, err := p.ParseBytesWithArena(a, aBytes)
+			if err != nil {
+				b.Fatal(err)
+			}
+			bv, err := p.ParseBytesWithArena(a, bBytes)
+			if err != nil {
+				b.Fatal(err)
+			}
 			v, _, err := MergeValues(a, av, bv)
 			if err != nil {
 				b.Fatal(err)
@@ -590,11 +608,17 @@ func BenchmarkSTMergeValuesObject(b *testing.B) {
 		objJSON := obj.String()
 		objBytes := []byte(objJSON)
 		b.ReportAllocs()
-		b.SetBytes(int64(len(objBytes)))
+		b.SetBytes(int64(len(objBytes) * 2))
 		b.ResetTimer()
 		for b.Loop() {
-			av, _ := p.ParseBytesWithArena(a, objBytes)
-			bv, _ := p.ParseBytesWithArena(a, objBytes)
+			av, err := p.ParseBytesWithArena(a, objBytes)
+			if err != nil {
+				b.Fatal(err)
+			}
+			bv, err := p.ParseBytesWithArena(a, objBytes)
+			if err != nil {
+				b.Fatal(err)
+			}
 			v, _, err := MergeValues(a, av, bv)
 			if err != nil {
 				b.Fatal(err)
