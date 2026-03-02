@@ -111,6 +111,15 @@ func TestMergeValues(t *testing.T) {
 		out := merged.MarshalTo(nil)
 		require.Equal(t, `1.1`, string(out))
 	})
+	t.Run("floats equal different representation", func(t *testing.T) {
+		t.Parallel()
+		a, b := MustParse(`1.0`), MustParse(`1.00`)
+		merged, changed, err := MergeValues(nil, a, b)
+		require.NoError(t, err)
+		require.Equal(t, false, changed)
+		out := merged.MarshalTo(nil)
+		require.Equal(t, `1.0`, string(out))
+	})
 	t.Run("arrays", func(t *testing.T) {
 		t.Parallel()
 		a, b := MustParse(`[1,2]`), MustParse(`[3,4]`)
