@@ -61,7 +61,8 @@ func (sc *Scanner) Next() bool {
 		return false
 	}
 
-	v, tail, err := parseValue(nil, sc.s, 0)
+	ctx := parseContext{} // heap mode: a == nil
+	v, tail, err := parseValue(&ctx, sc.s, 0)
 	if err != nil {
 		sc.err = err
 		return false

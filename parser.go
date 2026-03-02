@@ -1,7 +1,7 @@
 package astjson
 
 import (
-	"fmt"
+	"errors"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -10,6 +10,87 @@ import (
 	"github.com/wundergraph/astjson/fastfloat"
 	"github.com/wundergraph/go-arena"
 )
+
+// Sentinel errors for static error messages.
+// Using pre-allocated errors avoids fmt.Errorf allocations and removes the fmt
+// import, which can improve inlining budgets for functions in this file.
+var (
+	errEmptyString         = errors.New("cannot parse empty string")
+	errMaxDepth            = errors.New("too big depth for the nested JSON; it exceeds 300")
+	errMissingClosingBracket = errors.New("missing ']'")
+	errMissingClosingBrace = errors.New("missing '}'")
+	errMissingCommaArray   = errors.New("missing ',' after array value")
+	errMissingCommaObject  = errors.New("missing ',' after object value")
+	errUnexpectedEndArray  = errors.New("unexpected end of array")
+	errUnexpectedEndObject = errors.New("unexpected end of object")
+	errMissingOpenQuote    = errors.New(`cannot find opening '"' for object key`)
+	errMissingColon        = errors.New("missing ':' after object key")
+	errMissingClosingQuote = errors.New(`missing closing '"'`)
+)
+
+// parseContext holds per-parse state including slab allocators that amortize
+// arena allocation overhead by allocating Values and kvs in batches.
+type parseContext struct {
+	a  arena.Arena
+	vs valueSlab
+	ks kvSlab
+}
+
+// valueSlab allocates Values in batches to amortize arena overhead.
+// Starts with a small batch and doubles up to maxSlabSize.
+type valueSlab struct {
+	values []Value
+	pos    int
+}
+
+const (
+	minSlabSize = 8
+	maxSlabSize = 64
+)
+
+func (s *valueSlab) get(a arena.Arena) *Value {
+	if a == nil {
+		return new(Value)
+	}
+	if s.pos >= len(s.values) {
+		size := len(s.values) * 2
+		if size < minSlabSize {
+			size = minSlabSize
+		} else if size > maxSlabSize {
+			size = maxSlabSize
+		}
+		s.values = arena.AllocateSlice[Value](a, size, size)
+		s.pos = 0
+	}
+	v := &s.values[s.pos]
+	s.pos++
+	return v
+}
+
+// kvSlab allocates kv structs in batches to amortize arena overhead.
+type kvSlab struct {
+	kvs []kv
+	pos int
+}
+
+func (s *kvSlab) get(a arena.Arena) *kv {
+	if a == nil {
+		return new(kv)
+	}
+	if s.pos >= len(s.kvs) {
+		size := len(s.kvs) * 2
+		if size < minSlabSize {
+			size = minSlabSize
+		} else if size > maxSlabSize {
+			size = maxSlabSize
+		}
+		s.kvs = arena.AllocateSlice[kv](a, size, size)
+		s.pos = 0
+	}
+	k := &s.kvs[s.pos]
+	s.pos++
+	return k
+}
 
 // ParseError wraps a JSON parsing error.
 type ParseError struct {
@@ -106,15 +187,16 @@ func (p *Parser) ParseBytesWithArena(a arena.Arena, b []byte) (*Value, error) {
 }
 
 func (p *Parser) parse(a arena.Arena, s string) (*Value, error) {
+	ctx := parseContext{a: a}
 	s = skipWS(s)
 
-	v, tail, err := parseValue(a, s, 0)
+	v, tail, err := parseValue(&ctx, s, 0)
 	if err != nil {
-		return nil, NewParseError(fmt.Errorf("cannot parse JSON: %s; unparsed tail: %q", err, startEndString(tail)))
+		return nil, NewParseError(errors.New("cannot parse JSON: " + err.Error() + "; unparsed tail: " + strconv.Quote(startEndString(tail))))
 	}
 	tail = skipWS(tail)
 	if len(tail) > 0 {
-		return nil, NewParseError(fmt.Errorf("unexpected tail: %q", startEndString(tail)))
+		return nil, NewParseError(errors.New("unexpected tail: " + strconv.Quote(startEndString(tail))))
 	}
 	return v, nil
 }
@@ -131,15 +213,9 @@ func skipWSSlow(s string) string {
 	if len(s) == 0 {
 		return s
 	}
-
-	// Branch prediction optimization: check most common whitespace first
-	// Space (0x20) is most common, then newline, tab, carriage return
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c != 0x20 { // Most common whitespace
-			if c != 0x0A && c != 0x09 && c != 0x0D {
-				return s[i:]
-			}
+		if charFlags[s[i]]&charWS == 0 {
+			return s[i:]
 		}
 	}
 	return ""
@@ -157,13 +233,13 @@ type kv struct {
 // MaxDepth is the maximum depth for nested JSON.
 const MaxDepth = 300
 
-func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
+func parseValue(ctx *parseContext, s string, depth int) (*Value, string, error) {
 	if len(s) == 0 {
-		return nil, s, fmt.Errorf("cannot parse empty string")
+		return nil, s, errEmptyString
 	}
 	depth++
 	if depth > MaxDepth {
-		return nil, s, fmt.Errorf("too big depth for the nested JSON; it exceeds %d", MaxDepth)
+		return nil, s, errMaxDepth
 	}
 
 	// Branch prediction optimization: order by frequency
@@ -173,99 +249,98 @@ func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 		// String - most common in JSON
 		ss, tail, err := parseRawString(s[1:])
 		if err != nil {
-			return nil, tail, fmt.Errorf("cannot parse string: %s", err)
+			return nil, tail, errors.New("cannot parse string: " + err.Error())
 		}
-		v := arena.Allocate[Value](a)
+		v := ctx.vs.get(ctx.a)
 		v.t = TypeString
-		v.s = unescapeStringBestEffort(a, ss)
+		v.s = unescapeStringBestEffort(ctx.a, ss)
 		return v, tail, nil
 	case '{':
 		// Object - very common
-		v, tail, err := parseObject(a, s[1:], depth)
+		v, tail, err := parseObject(ctx, s[1:], depth)
 		if err != nil {
-			return nil, tail, fmt.Errorf("cannot parse object: %s", err)
+			return nil, tail, errors.New("cannot parse object: " + err.Error())
 		}
 		return v, tail, nil
 	case '[':
 		// Array - common
-		v, tail, err := parseArray(a, s[1:], depth)
+		v, tail, err := parseArray(ctx, s[1:], depth)
 		if err != nil {
-			return nil, tail, fmt.Errorf("cannot parse array: %s", err)
+			return nil, tail, errors.New("cannot parse array: " + err.Error())
 		}
 		return v, tail, nil
 	case 't':
 		// true literal - less common
 		if len(s) < len("true") || s[:len("true")] != "true" {
-			return nil, s, fmt.Errorf("unexpected value found: %q", s)
+			return nil, s, errors.New("unexpected value found: " + strconv.Quote(s))
 		}
 		return valueTrue, s[len("true"):], nil
 	case 'f':
 		// false literal - less common
 		if len(s) < len("false") || s[:len("false")] != "false" {
-			return nil, s, fmt.Errorf("unexpected value found: %q", s)
+			return nil, s, errors.New("unexpected value found: " + strconv.Quote(s))
 		}
 		return valueFalse, s[len("false"):], nil
 	case 'n':
 		// null literal - less common
 		if len(s) < len("null") || s[:len("null")] != "null" {
 			// Try parsing NaN
-			if len(s) >= 3 && strings.EqualFold(s[:3], "nan") {
-				v := arena.Allocate[Value](a)
+			if len(s) >= 3 && (s[0]|0x20) == 'n' && (s[1]|0x20) == 'a' && (s[2]|0x20) == 'n' {
+				v := ctx.vs.get(ctx.a)
 				v.t = TypeNumber
 				v.s = s[:3]
 				return v, s[3:], nil
 			}
-			return nil, s, fmt.Errorf("unexpected value found: %q", s)
+			return nil, s, errors.New("unexpected value found: " + strconv.Quote(s))
 		}
 		return valueNull, s[len("null"):], nil
 	default:
 		// Number - very common, but handled last due to complex parsing
 		ns, tail, err := parseRawNumber(s)
 		if err != nil {
-			return nil, tail, fmt.Errorf("cannot parse number: %s", err)
+			return nil, tail, errors.New("cannot parse number: " + err.Error())
 		}
-		v := arena.Allocate[Value](a)
+		v := ctx.vs.get(ctx.a)
 		v.t = TypeNumber
 		v.s = ns
 		return v, tail, nil
 	}
 }
 
-func parseArray(a arena.Arena, s string, depth int) (*Value, string, error) {
+func parseArray(ctx *parseContext, s string, depth int) (*Value, string, error) {
 	s = skipWS(s)
 	if len(s) == 0 {
-		return nil, s, fmt.Errorf("missing ']'")
+		return nil, s, errMissingClosingBracket
 	}
 
 	if s[0] == ']' {
-		v := arena.Allocate[Value](a)
+		v := ctx.vs.get(ctx.a)
 		v.t = TypeArray
 		v.a = v.a[:0]
 		return v, s[1:], nil
 	}
 
-	arr := arena.Allocate[Value](a)
+	arr := ctx.vs.get(ctx.a)
 	arr.t = TypeArray
-	arr.a = arr.a[:0]
+	arr.a = arena.AllocateSlice[*Value](ctx.a, 0, 8)
 	for {
 		var v *Value
 		var err error
 
 		s = skipWS(s)
-		v, s, err = parseValue(a, s, depth)
+		v, s, err = parseValue(ctx, s, depth)
 		if err != nil {
-			return nil, s, fmt.Errorf("cannot parse array value: %s", err)
+			return nil, s, errors.New("cannot parse array value: " + err.Error())
 		}
-		if arr.a == nil {
-			arr.a = arena.AllocateSlice[*Value](a, 1, 1)
-			arr.a[0] = v
+		if len(arr.a) < cap(arr.a) {
+			arr.a = append(arr.a, v)
 		} else {
-			arr.a = arena.SliceAppend(a, arr.a, v)
+			arr.a = arena.SliceAppend(ctx.a, arr.a, v)
 		}
 
 		s = skipWS(s)
 		if len(s) == 0 {
-			return nil, s, fmt.Errorf("unexpected end of array")
+			return nil, s, errUnexpectedEndArray
 		}
 		if s[0] == ',' {
 			s = s[1:]
@@ -275,56 +350,63 @@ func parseArray(a arena.Arena, s string, depth int) (*Value, string, error) {
 			s = s[1:]
 			return arr, s, nil
 		}
-		return nil, s, fmt.Errorf("missing ',' after array value")
+		return nil, s, errMissingCommaArray
 	}
 }
 
-func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
+func parseObject(ctx *parseContext, s string, depth int) (*Value, string, error) {
 	s = skipWS(s)
 	if len(s) == 0 {
-		return nil, s, fmt.Errorf("missing '}'")
+		return nil, s, errMissingClosingBrace
 	}
 
 	if s[0] == '}' {
-		v := arena.Allocate[Value](a)
+		v := ctx.vs.get(ctx.a)
 		v.t = TypeObject
 		v.o.reset()
 		return v, s[1:], nil
 	}
 
-	o := arena.Allocate[Value](a)
+	o := ctx.vs.get(ctx.a)
 	o.t = TypeObject
-	o.o.reset()
+	o.o.kvs = arena.AllocateSlice[*kv](ctx.a, 0, 8)
 	for {
 		var err error
-		kv := o.o.getKV(a)
+		// Inline kv allocation from slab instead of calling getKV
+		// (getKV is kept unchanged for Object.Set in update.go)
+		newKV := ctx.ks.get(ctx.a)
+		if len(o.o.kvs) < cap(o.o.kvs) {
+			o.o.kvs = append(o.o.kvs, newKV)
+		} else {
+			o.o.kvs = arena.SliceAppend(ctx.a, o.o.kvs, newKV)
+		}
 
 		// Parse key.
 		s = skipWS(s)
 		if len(s) == 0 || s[0] != '"' {
-			return nil, s, fmt.Errorf(`cannot find opening '"" for object key`)
+			return nil, s, errMissingOpenQuote
 		}
-		kv.k, s, err = parseRawKey(s[1:])
+		newKV.k, s, err = parseRawKey(s[1:])
 		if err != nil {
-			return nil, s, fmt.Errorf("cannot parse object key: %s", err)
+			return nil, s, errors.New("cannot parse object key: " + err.Error())
 		}
-		kv.k = unescapeStringBestEffort(a, kv.k)
-		kv.keyUnescaped = true
+		newKV.k = unescapeStringBestEffort(ctx.a, newKV.k)
+		newKV.keyUnescaped = true
 		s = skipWS(s)
 		if len(s) == 0 || s[0] != ':' {
-			return nil, s, fmt.Errorf("missing ':' after object key")
+			return nil, s, errMissingColon
 		}
 		s = s[1:]
 
 		// Parse value
 		s = skipWS(s)
-		kv.v, s, err = parseValue(a, s, depth)
+		newKV.v, s, err = parseValue(ctx, s, depth)
 		if err != nil {
-			return nil, s, fmt.Errorf("cannot parse object value: %s", err)
+			return nil, s, errors.New("cannot parse object value: " + err.Error())
 		}
 		s = skipWS(s)
 		if len(s) == 0 {
-			return nil, s, fmt.Errorf("unexpected end of object")
+			return nil, s, errUnexpectedEndObject
 		}
 		if s[0] == ',' {
 			s = s[1:]
@@ -333,7 +415,7 @@ func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 		if s[0] == '}' {
 			return o, s[1:], nil
 		}
-		return nil, s, fmt.Errorf("missing ',' after object value")
+		return nil, s, errMissingCommaObject
 	}
 }
 
@@ -351,15 +433,8 @@ func escapeString(dst []byte, s string) []byte {
 }
 
 func hasSpecialChars(s string) bool {
-	// Branch prediction optimization: check most common cases first
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		// Most common special chars first
-		if c == '"' || c == '\\' {
-			return true
-		}
-		// Control characters - less common
-		if c < 0x20 {
+		if charFlags[s[i]]&charEscape != 0 {
 			return true
 		}
 	}
@@ -411,12 +486,10 @@ func unescapeStringBestEffort(a arena.Arena, s string) string {
 		return s
 	}
 
-	// Estimate capacity to avoid frequent reallocations
-	estimatedCap := len(s) + 4
-	b := arena.AllocateSlice[byte](a, 0, estimatedCap)
-
-	// Add the initial part before the first escape
-	b = arena.SliceAppend(a, b, []byte(s[:n])...)
+	// Pre-allocate buffer to len(s) — unescaped is always <= escaped length.
+	// Use direct indexing instead of per-character SliceAppend.
+	b := arena.AllocateSlice[byte](a, len(s), len(s))
+	w := copy(b, s[:n])
 	s = s[n+1:]
 
 	for len(s) > 0 {
@@ -424,95 +497,104 @@ func unescapeStringBestEffort(a arena.Arena, s string) string {
 		s = s[1:]
 		switch ch {
 		case '"':
-			b = arena.SliceAppend(a, b, '"')
+			b[w] = '"'
+			w++
 		case '\\':
-			b = arena.SliceAppend(a, b, '\\')
+			b[w] = '\\'
+			w++
 		case '/':
-			b = arena.SliceAppend(a, b, '/')
+			b[w] = '/'
+			w++
 		case 'b':
-			b = arena.SliceAppend(a, b, '\b')
+			b[w] = '\b'
+			w++
 		case 'f':
-			b = arena.SliceAppend(a, b, '\f')
+			b[w] = '\f'
+			w++
 		case 'n':
-			b = arena.SliceAppend(a, b, '\n')
+			b[w] = '\n'
+			w++
 		case 'r':
-			b = arena.SliceAppend(a, b, '\r')
+			b[w] = '\r'
+			w++
 		case 't':
-			b = arena.SliceAppend(a, b, '\t')
+			b[w] = '\t'
+			w++
 		case 'u':
 			if len(s) < 4 {
-				// Too short escape sequence. Just store it unchanged.
-				b = arena.SliceAppend(a, b, []byte("\\u")...)
+				b[w] = '\\'
+				b[w+1] = 'u'
+				w += 2
 				break
 			}
 			xs := s[:4]
-			x, err := strconv.ParseUint(xs, 16, 16)
-			if err != nil {
-				// Invalid escape sequence. Just store it unchanged.
-				b = arena.SliceAppend(a, b, []byte("\\u")...)
+			x, ok := parseHex4(xs)
+			if !ok {
+				b[w] = '\\'
+				b[w+1] = 'u'
+				w += 2
 				break
 			}
 			s = s[4:]
 			if !utf16.IsSurrogate(rune(x)) {
-				var buf [utf8.UTFMax]byte
-				n := utf8.EncodeRune(buf[:], rune(x))
-				b = arena.SliceAppend(a, b, buf[:n]...)
+				w += utf8.EncodeRune(b[w:], rune(x))
 				break
 			}
 
 			// Surrogate.
 			// See https://en.wikipedia.org/wiki/Universal_Character_Set_characters#Surrogates
 			if len(s) < 6 || s[0] != '\\' || s[1] != 'u' {
-				b = arena.SliceAppend(a, b, []byte("\\u")...)
-				b = arena.SliceAppend(a, b, []byte(xs)...)
+				b[w] = '\\'
+				b[w+1] = 'u'
+				w += 2
+				w += copy(b[w:], xs)
 				break
 			}
-			x1, err := strconv.ParseUint(s[2:6], 16, 16)
-			if err != nil {
-				b = arena.SliceAppend(a, b, []byte("\\u")...)
-				b = arena.SliceAppend(a, b, []byte(xs)...)
+			x1, ok := parseHex4(s[2:6])
+			if !ok {
+				b[w] = '\\'
+				b[w+1] = 'u'
+				w += 2
+				w += copy(b[w:], xs)
 				break
 			}
 			r := utf16.DecodeRune(rune(x), rune(x1))
-			var buf [utf8.UTFMax]byte
-			rn := utf8.EncodeRune(buf[:], r)
-			b = arena.SliceAppend(a, b, buf[:rn]...)
+			w += utf8.EncodeRune(b[w:], r)
 			s = s[6:]
 		default:
-			// Unknown escape sequence. Just store it unchanged.
-			b = arena.SliceAppend(a, b, '\\', ch)
+			b[w] = '\\'
+			b[w+1] = ch
+			w += 2
 		}
 		n = strings.IndexByte(s, '\\')
 		if n < 0 {
-			b = arena.SliceAppend(a, b, []byte(s)...)
+			w += copy(b[w:], s)
 			break
 		}
-		b = arena.SliceAppend(a, b, []byte(s[:n])...)
+		w += copy(b[w:], s[:n])
 		s = s[n+1:]
 	}
-	return b2s(b)
+	return b2s(b[:w])
 }
 
 // parseRawKey is similar to parseRawString, but is optimized
 // for small-sized keys without escape sequences.
 func parseRawKey(s string) (string, string, error) {
-	for i := 0; i < len(s); i++ {
-		if s[i] == '"' {
-			// Fast path.
-			return s[:i], s[i+1:], nil
-		}
-		if s[i] == '\\' {
-			// Slow path.
-			return parseRawString(s)
-		}
+	n := strings.IndexByte(s, '"')
+	if n < 0 {
+		return s, "", errMissingClosingQuote
 	}
-	return s, "", fmt.Errorf(`missing closing '"'`)
+	// Check if the key portion contains an escape sequence.
+	if strings.IndexByte(s[:n], '\\') >= 0 {
+		return parseRawString(s)
+	}
+	return s[:n], s[n+1:], nil
 }
 
 func parseRawString(s string) (string, string, error) {
 	n := strings.IndexByte(s, '"')
 	if n < 0 {
-		return s, "", fmt.Errorf(`missing closing '"'`)
+		return s, "", errMissingClosingQuote
 	}
 	if n == 0 || s[n-1] != '\\' {
 		// Fast path. No escaped ".
@@ -533,7 +615,7 @@ func parseRawString(s string) (string, string, error) {
 
 		n = strings.IndexByte(s, '"')
 		if n < 0 {
-			return ss, "", fmt.Errorf(`missing closing '"'`)
+			return ss, "", errMissingClosingQuote
 		}
 		if n == 0 || s[n-1] != '\\' {
 			return ss[:len(ss)-len(s)+n], s[n+1:], nil
@@ -546,18 +628,18 @@ func parseRawNumber(s string) (string, string, error) {
 
 	// Find the end of the number.
 	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		if (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || ch == 'e' || ch == 'E' || ch == '+' {
+		if charFlags[s[i]]&charNumChar != 0 {
 			continue
 		}
 		if i == 0 || i == 1 && (s[0] == '-' || s[0] == '+') {
 			if len(s[i:]) >= 3 {
 				xs := s[i : i+3]
-				if strings.EqualFold(xs, "inf") || strings.EqualFold(xs, "nan") {
+				if ((xs[0]|0x20) == 'i' && (xs[1]|0x20) == 'n' && (xs[2]|0x20) == 'f') ||
+					((xs[0]|0x20) == 'n' && (xs[1]|0x20) == 'a' && (xs[2]|0x20) == 'n') {
 					return s[:i+3], s[i+3:], nil
 				}
 			}
-			return "", s, fmt.Errorf("unexpected char: %q", s[:1])
+			return "", s, errors.New("unexpected char: " + strconv.Quote(s[:1]))
 		}
 		ns := s[:i]
 		s = s[i:]
@@ -573,12 +655,13 @@ func parseRawNumber(s string) (string, string, error) {
 //
 // Cache-friendly layout: hot data first
 type Object struct {
-	kvs []*kv // HOT: frequently accessed - 24 bytes
-	// Total: 24 bytes - compact and cache-friendly
+	kvs     []*kv          // HOT: frequently accessed
+	kvIndex map[string]int // lazily built on first Get when len(kvs) > 16
 }
 
 func (o *Object) reset() {
 	o.kvs = o.kvs[:0]
+	o.kvIndex = nil
 }
 
 // MarshalTo appends marshaled o to dst and returns the result.
@@ -615,9 +698,14 @@ func (o *Object) String() string {
 
 func (o *Object) getKV(a arena.Arena) *kv {
 	if o.kvs == nil {
-		o.kvs = arena.AllocateSlice[*kv](a, 0, 1)
+		o.kvs = arena.AllocateSlice[*kv](a, 0, 4)
 	}
-	o.kvs = arena.SliceAppend(a, o.kvs, arena.Allocate[kv](a))
+	newKV := arena.Allocate[kv](a)
+	if len(o.kvs) < cap(o.kvs) {
+		o.kvs = append(o.kvs, newKV)
+	} else {
+		o.kvs = arena.SliceAppend(a, o.kvs, newKV)
+	}
 	return o.kvs[len(o.kvs)-1]
 }
 
@@ -640,6 +728,19 @@ func (o *Object) Len() int {
 // The returned value is valid until Parse is called on the Parser returned o.
 func (o *Object) Get(key string) *Value {
 	if o == nil {
+		return nil
+	}
+	// For large objects, use a lazily-built hash map for O(1) lookup.
+	if len(o.kvs) > 16 {
+		if o.kvIndex == nil {
+			o.kvIndex = make(map[string]int, len(o.kvs))
+			for i, kv := range o.kvs {
+				o.kvIndex[kv.k] = i
+			}
+		}
+		if i, ok := o.kvIndex[key]; ok {
+			return o.kvs[i].v
+		}
 		return nil
 	}
 	// Keys are always pre-unescaped during parsing and Object.Set,
@@ -675,11 +776,10 @@ func (o *Object) Visit(f func(key []byte, v *Value)) {
 //
 // Cache-friendly layout: hot data first, compact structure
 type Value struct {
-	t Type     // HOT: accessed on every operation - 8 bytes
+	t Type     // HOT: accessed on every operation - 1 byte
 	s string   // HOT: frequently accessed for strings/numbers - 16 bytes
 	a []*Value // HOT: frequently accessed for arrays - 24 bytes
-	o Object   // COLD: less frequently accessed - 25 bytes
-	// Total: 73 bytes - compact and cache-friendly
+	o Object   // COLD: less frequently accessed - 24 bytes
 }
 
 // MarshalTo appends marshaled v to dst and returns the result.
@@ -708,7 +808,7 @@ func (v *Value) MarshalTo(dst []byte) []byte {
 	case TypeNull:
 		return append(dst, "null"...)
 	default:
-		panic(fmt.Errorf("BUG: unexpected Value type: %d", v.t))
+		panic("BUG: unexpected Value type: " + strconv.Itoa(int(v.t)))
 	}
 }
 
@@ -727,7 +827,7 @@ func (v *Value) String() string {
 }
 
 // Type represents JSON type.
-type Type int
+type Type uint8
 
 const (
 	// TypeNull is JSON null.
@@ -773,7 +873,7 @@ func (t Type) String() string {
 	// typeRawString is skipped intentionally,
 	// since it shouldn't be visible to user.
 	default:
-		panic(fmt.Errorf("BUG: unknown Value type: %d", t))
+		panic("BUG: unknown Value type: " + strconv.Itoa(int(t)))
 	}
 }
 
@@ -953,7 +1053,7 @@ func (v *Value) GetBool(keys ...string) bool {
 // Use GetObject if you don't need error handling.
 func (v *Value) Object() (*Object, error) {
 	if v.t != TypeObject {
-		return nil, fmt.Errorf("value doesn't contain object; it contains %s", v.Type())
+		return nil, errors.New("value doesn't contain object; it contains " + v.Type().String())
 	}
 	return &v.o, nil
 }
@@ -965,7 +1065,7 @@ func (v *Value) Object() (*Object, error) {
 // Use GetArray if you don't need error handling.
 func (v *Value) Array() ([]*Value, error) {
 	if v.t != TypeArray {
-		return nil, fmt.Errorf("value doesn't contain array; it contains %s", v.Type())
+		return nil, errors.New("value doesn't contain array; it contains " + v.Type().String())
 	}
 	return v.a, nil
 }
@@ -977,7 +1077,7 @@ func (v *Value) Array() ([]*Value, error) {
 // Use GetStringBytes if you don't need error handling.
 func (v *Value) StringBytes() ([]byte, error) {
 	if v.Type() != TypeString {
-		return nil, fmt.Errorf("value doesn't contain string; it contains %s", v.Type())
+		return nil, errors.New("value doesn't contain string; it contains " + v.Type().String())
 	}
 	return s2b(v.s), nil
 }
@@ -987,7 +1087,7 @@ func (v *Value) StringBytes() ([]byte, error) {
 // Use GetFloat64 if you don't need error handling.
 func (v *Value) Float64() (float64, error) {
 	if v.Type() != TypeNumber {
-		return 0, fmt.Errorf("value doesn't contain number; it contains %s", v.Type())
+		return 0, errors.New("value doesn't contain number; it contains " + v.Type().String())
 	}
 	return fastfloat.Parse(v.s)
 }
@@ -997,7 +1097,7 @@ func (v *Value) Float64() (float64, error) {
 // Use GetInt if you don't need error handling.
 func (v *Value) Int() (int, error) {
 	if v.Type() != TypeNumber {
-		return 0, fmt.Errorf("value doesn't contain number; it contains %s", v.Type())
+		return 0, errors.New("value doesn't contain number; it contains " + v.Type().String())
 	}
 	n, err := fastfloat.ParseInt64(v.s)
 	if err != nil {
@@ -1011,7 +1111,7 @@ func (v *Value) Int() (int, error) {
 // Use GetInt if you don't need error handling.
 func (v *Value) Uint() (uint, error) {
 	if v.Type() != TypeNumber {
-		return 0, fmt.Errorf("value doesn't contain number; it contains %s", v.Type())
+		return 0, errors.New("value doesn't contain number; it contains " + v.Type().String())
 	}
 	n, err := fastfloat.ParseUint64(v.s)
 	if err != nil {
@@ -1025,7 +1125,7 @@ func (v *Value) Uint() (uint, error) {
 // Use GetInt64 if you don't need error handling.
 func (v *Value) Int64() (int64, error) {
 	if v.Type() != TypeNumber {
-		return 0, fmt.Errorf("value doesn't contain number; it contains %s", v.Type())
+		return 0, errors.New("value doesn't contain number; it contains " + v.Type().String())
 	}
 	return fastfloat.ParseInt64(v.s)
 }
@@ -1035,7 +1135,7 @@ func (v *Value) Int64() (int64, error) {
 // Use GetInt64 if you don't need error handling.
 func (v *Value) Uint64() (uint64, error) {
 	if v.Type() != TypeNumber {
-		return 0, fmt.Errorf("value doesn't contain number; it contains %s", v.Type())
+		return 0, errors.New("value doesn't contain number; it contains " + v.Type().String())
 	}
 	return fastfloat.ParseUint64(v.s)
 }
@@ -1050,7 +1150,7 @@ func (v *Value) Bool() (bool, error) {
 	if v.t == TypeFalse {
 		return false, nil
 	}
-	return false, fmt.Errorf("value doesn't contain bool; it contains %s", v.Type())
+	return false, errors.New("value doesn't contain bool; it contains " + v.Type().String())
 }
 
 var (

@@ -17,6 +17,7 @@ func (o *Object) Del(key string) {
 		if kv.k == key {
 			o.kvs = append(o.kvs[:i], o.kvs[i+1:]...)
 			o.kvs[:len(o.kvs)+1][len(o.kvs)] = nil // clear hidden slot for GC
+			o.kvIndex = nil                          // invalidate index
 			return
 		}
 	}
@@ -75,6 +76,7 @@ func (o *Object) Set(a arena.Arena, key string, value *Value) {
 	kv.k = arenaString(a, key)
 	kv.v = value
 	kv.keyUnescaped = true // New keys are already unescaped since they come from user input
+	o.kvIndex = nil         // invalidate index
 }
 
 // Set sets (key, value) entry in the array or object v.

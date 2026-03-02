@@ -1,10 +1,16 @@
 package fastfloat
 
 import (
-	"fmt"
+	"errors"
 	"math"
 	"strconv"
 	"strings"
+)
+
+var (
+	errParseUint64Empty = errors.New("cannot parse uint64 from empty string")
+	errParseInt64Empty  = errors.New("cannot parse int64 from empty string")
+	errParseFloat64Empty = errors.New("cannot parse float64 from empty string")
 )
 
 // ParseUint64BestEffort parses uint64 number s.
@@ -54,7 +60,7 @@ func ParseUint64BestEffort(s string) uint64 {
 // See also ParseUint64BestEffort.
 func ParseUint64(s string) (uint64, error) {
 	if len(s) == 0 {
-		return 0, fmt.Errorf("cannot parse uint64 from empty string")
+		return 0, errParseUint64Empty
 	}
 	i := uint(0)
 	d := uint64(0)
@@ -77,11 +83,11 @@ func ParseUint64(s string) (uint64, error) {
 		break
 	}
 	if i <= j {
-		return 0, fmt.Errorf("cannot parse uint64 from %q", s)
+		return 0, errors.New("cannot parse uint64 from " + strconv.Quote(s))
 	}
 	if i < uint(len(s)) {
 		// Unparsed tail left.
-		return 0, fmt.Errorf("unparsed tail left after parsing uint64 from %q: %q", s, s[i:])
+		return 0, errors.New("unparsed tail left after parsing uint64 from " + strconv.Quote(s) + ": " + strconv.Quote(s[i:]))
 	}
 	return d, nil
 }
@@ -144,14 +150,14 @@ func ParseInt64BestEffort(s string) int64 {
 // See also ParseInt64BestEffort.
 func ParseInt64(s string) (int64, error) {
 	if len(s) == 0 {
-		return 0, fmt.Errorf("cannot parse int64 from empty string")
+		return 0, errParseInt64Empty
 	}
 	i := uint(0)
 	minus := s[0] == '-'
 	if minus {
 		i++
 		if i >= uint(len(s)) {
-			return 0, fmt.Errorf("cannot parse int64 from %q", s)
+			return 0, errors.New("cannot parse int64 from " + strconv.Quote(s))
 		}
 	}
 
@@ -175,11 +181,11 @@ func ParseInt64(s string) (int64, error) {
 		break
 	}
 	if i <= j {
-		return 0, fmt.Errorf("cannot parse int64 from %q", s)
+		return 0, errors.New("cannot parse int64 from " + strconv.Quote(s))
 	}
 	if i < uint(len(s)) {
 		// Unparsed tail left.
-		return 0, fmt.Errorf("unparsed tail left after parsing int64 form %q: %q", s, s[i:])
+		return 0, errors.New("unparsed tail left after parsing int64 from " + strconv.Quote(s) + ": " + strconv.Quote(s[i:]))
 	}
 	if minus {
 		d = -d
@@ -355,21 +361,21 @@ func ParseBestEffort(s string) float64 {
 // See also ParseBestEffort.
 func Parse(s string) (float64, error) {
 	if len(s) == 0 {
-		return 0, fmt.Errorf("cannot parse float64 from empty string")
+		return 0, errParseFloat64Empty
 	}
 	i := uint(0)
 	minus := s[0] == '-'
 	if minus {
 		i++
 		if i >= uint(len(s)) {
-			return 0, fmt.Errorf("cannot parse float64 from %q", s)
+			return 0, errors.New("cannot parse float64 from " + strconv.Quote(s))
 		}
 	}
 
 	// the integer part might be elided to remain compliant
 	// with https://go.dev/ref/spec#Floating-point_literals
 	if s[i] == '.' && (i+1 >= uint(len(s)) || s[i+1] < '0' || s[i+1] > '9') {
-		return 0, fmt.Errorf("missing integer and fractional part in %q", s)
+		return 0, errors.New("missing integer and fractional part in " + strconv.Quote(s))
 	}
 
 	d := uint64(0)
@@ -405,7 +411,7 @@ func Parse(s string) (float64, error) {
 		if strings.EqualFold(ss, "nan") {
 			return nan, nil
 		}
-		return 0, fmt.Errorf("unparsed tail left after parsing float64 from %q: %q", s, ss)
+		return 0, errors.New("unparsed tail left after parsing float64 from " + strconv.Quote(s) + ": " + strconv.Quote(ss))
 	}
 	f := float64(d)
 	if i >= uint(len(s)) {
@@ -433,7 +439,7 @@ func Parse(s string) (float64, error) {
 					// The mantissa is out of range. Fall back to standard parsing.
 					f, err := strconv.ParseFloat(s, 64)
 					if err != nil && !math.IsInf(f, 0) {
-						return 0, fmt.Errorf("cannot parse mantissa in %q: %s", s, err)
+						return 0, errors.New("cannot parse mantissa in " + strconv.Quote(s) + ": " + err.Error())
 					}
 					return f, nil
 				}
@@ -455,14 +461,14 @@ func Parse(s string) (float64, error) {
 		// Parse exponent part.
 		i++
 		if i >= uint(len(s)) {
-			return 0, fmt.Errorf("cannot parse exponent in %q", s)
+			return 0, errors.New("cannot parse exponent in " + strconv.Quote(s))
 		}
 		expMinus := false
 		if s[i] == '+' || s[i] == '-' {
 			expMinus = s[i] == '-'
 			i++
 			if i >= uint(len(s)) {
-				return 0, fmt.Errorf("cannot parse exponent in %q", s)
+				return 0, errors.New("cannot parse exponent in " + strconv.Quote(s))
 			}
 		}
 		exp := int16(0)
@@ -476,7 +482,7 @@ func Parse(s string) (float64, error) {
 					// Fall back to standard parsing.
 					f, err := strconv.ParseFloat(s, 64)
 					if err != nil && !math.IsInf(f, 0) {
-						return 0, fmt.Errorf("cannot parse exponent in %q: %s", s, err)
+						return 0, errors.New("cannot parse exponent in " + strconv.Quote(s) + ": " + err.Error())
 					}
 					return f, nil
 				}
@@ -485,7 +491,7 @@ func Parse(s string) (float64, error) {
 			break
 		}
 		if i <= j {
-			return 0, fmt.Errorf("cannot parse exponent in %q", s)
+			return 0, errors.New("cannot parse exponent in " + strconv.Quote(s))
 		}
 		if expMinus {
 			exp = -exp
@@ -498,7 +504,7 @@ func Parse(s string) (float64, error) {
 			return f, nil
 		}
 	}
-	return 0, fmt.Errorf("cannot parse float64 from %q", s)
+	return 0, errors.New("cannot parse float64 from " + strconv.Quote(s))
 }
 
 var inf = math.Inf(1)

@@ -1,7 +1,6 @@
 package astjson
 
 import (
-	"bytes"
 	"errors"
 
 	"github.com/wundergraph/go-arena"
@@ -34,18 +33,24 @@ func MergeValues(ar arena.Arena, a, b *Value) (v *Value, changed bool, err error
 	if b == nil {
 		return a, false, nil
 	}
-	if b.Type() == TypeNull && a.Type() == TypeObject {
+	at, bt := a.t, b.t
+	if bt == TypeNull && at == TypeObject {
 		// we assume that null was returned in an error case for resolving a nested object field
 		// as we've got an object on the left side, we don't override the whole object with null
 		// instead, we keep the left object and discard the null on the right side
 		return a, false, nil
 	}
-	aBool, bBool := a.Type() == TypeTrue || a.Type() == TypeFalse, b.Type() == TypeTrue || b.Type() == TypeFalse
-	booleans := aBool && bBool
-	if a.Type() != b.Type() && !booleans {
-		return nil, false, ErrMergeDifferentTypes
+	if at != bt {
+		// Only compute boolean compatibility when types actually differ
+		aBool := at == TypeTrue || at == TypeFalse
+		bBool := bt == TypeTrue || bt == TypeFalse
+		if !aBool || !bBool {
+			return nil, false, ErrMergeDifferentTypes
+		}
+		// Types differ but both are booleans — b replaces a
+		return b, true, nil
 	}
-	switch a.Type() {
+	switch at {
 	case TypeObject:
 		ao, _ := a.Object()
 		bo, _ := b.Object()
@@ -94,29 +99,23 @@ func MergeValues(ar arena.Arena, a, b *Value) (v *Value, changed bool, err error
 			}
 		}
 		return a, false, nil
-	case TypeFalse:
-		if b.Type() == TypeTrue {
-			return b, true, nil
-		}
-		return a, false, nil
-	case TypeTrue:
-		if b.Type() == TypeFalse {
-			return b, true, nil
-		}
-		return a, false, nil
-	case TypeNull:
+	case TypeTrue, TypeFalse, TypeNull:
+		// at == bt guaranteed by the check above, no change needed
 		return a, false, nil
 	case TypeNumber:
-		af, _ := a.Float64()
-		bf, _ := b.Float64()
-		if af != bf {
+		// Fast path: if raw number strings are identical, values are equal.
+		// This avoids expensive float64 parsing in the common case.
+		if a.s == b.s {
+			return a, false, nil
+		}
+		af, aErr := a.Float64()
+		bf, bErr := b.Float64()
+		if aErr != nil || bErr != nil || af != bf {
 			return b, true, nil
 		}
 		return a, false, nil
 	case TypeString:
-		as, _ := a.StringBytes()
-		bs, _ := b.StringBytes()
-		if !bytes.Equal(as, bs) {
+		if a.s != b.s {
 			return b, true, nil
 		}
 		return a, false, nil

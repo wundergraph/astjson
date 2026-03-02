@@ -1672,7 +1672,7 @@ func TestObjectGetEdgeCases(t *testing.T) {
 // TestValueMarshalToEdgeCases tests edge cases in Value.MarshalTo
 func TestValueMarshalToEdgeCases(t *testing.T) {
 	t.Run("unknown type", func(t *testing.T) {
-		v := &Value{t: Type(999)} // Invalid type
+		v := &Value{t: Type(255)} // Invalid type
 		defer func() {
 			if r := recover(); r == nil {
 				t.Errorf("expected panic for unknown type")
@@ -1685,7 +1685,7 @@ func TestValueMarshalToEdgeCases(t *testing.T) {
 // TestTypeStringEdgeCases tests edge cases in Type.String
 func TestTypeStringEdgeCases(t *testing.T) {
 	t.Run("unknown type", func(t *testing.T) {
-		tp := Type(999) // Invalid type
+		tp := Type(255) // Invalid type
 		defer func() {
 			if r := recover(); r == nil {
 				t.Errorf("expected panic for unknown type")
