@@ -108,6 +108,8 @@ func MergeValues(ar arena.Arena, a, b *Value) (v *Value, changed bool, err error
 		if a.s == b.s {
 			return a, false, nil
 		}
+		// Slow path: parse as float64. If either parse fails or values differ,
+		// treat as changed (b replaces a).
 		af, aErr := a.Float64()
 		bf, bErr := b.Float64()
 		if aErr != nil || bErr != nil || af != bf {

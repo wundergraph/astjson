@@ -57,6 +57,7 @@ func init() {
 // Returns the value and true on success, or 0 and false on invalid input.
 func parseHex4(s string) (uint16, bool) {
 	a, b, c, d := hexDigit[s[0]], hexDigit[s[1]], hexDigit[s[2]], hexDigit[s[3]]
+	// Valid hex digits are 0..15 (low nibble); invalid sentinel 0xFF has high bits set.
 	if (a|b|c|d)&0xF0 != 0 {
 		return 0, false
 	}

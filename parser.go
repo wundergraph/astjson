@@ -656,7 +656,7 @@ func parseRawNumber(s string) (string, string, error) {
 // Cache-friendly layout: hot data first
 type Object struct {
 	kvs     []*kv          // HOT: frequently accessed
-	kvIndex map[string]int // lazily built on first Get when len(kvs) > 16
+	kvIndex map[string]int // lazily-built reverse index for O(1) lookups on objects with >16 keys; invalidated on Del/Set
 }
 
 func (o *Object) reset() {
@@ -735,7 +735,10 @@ func (o *Object) Get(key string) *Value {
 		if o.kvIndex == nil {
 			o.kvIndex = make(map[string]int, len(o.kvs))
 			for i, kv := range o.kvs {
-				o.kvIndex[kv.k] = i
+				// Store first occurrence to match linear scan semantics.
+				if _, exists := o.kvIndex[kv.k]; !exists {
+					o.kvIndex[kv.k] = i
+				}
 			}
 		}
 		if i, ok := o.kvIndex[key]; ok {
