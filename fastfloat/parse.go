@@ -194,6 +194,92 @@ var float64pow10 = [...]float64{
 	1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
 }
 
+// parseMantissaOverflow handles the case where the mantissa has too many digits
+// for the fast float64pow10 table. It continues accumulating digits (up to 19 total),
+// skips remaining fractional digits, parses any exponent, and uses eiselLemire64
+// before falling back to strconv.ParseFloat.
+//
+// Parameters:
+//   - s: the original input string
+//   - d: the mantissa accumulated so far
+//   - i, j, k: current position, start of integer digits, start of fractional digits
+//   - minus: whether the number is negative
+//
+// Returns (result, didHandle). If didHandle is true, result is the parsed float.
+// If didHandle is false, the caller should fall back to strconv.ParseFloat(s, 64).
+func parseMantissaOverflow(s string, d uint64, i, j, k uint, minus bool) (float64, bool) {
+	// Continue accumulating digits while d won't overflow uint64.
+	// uint64 max is 18446744073709551615, so d*10+9 overflows when d > 1844674407370955161.
+	const cutoff = 1844674407370955161
+	for i < uint(len(s)) && s[i] >= '0' && s[i] <= '9' && d <= cutoff {
+		d = d*10 + uint64(s[i]-'0')
+		i++
+	}
+	mantDigits := int(i - k) // fractional digits accumulated into d
+	// Skip remaining fractional digits beyond precision.
+	for i < uint(len(s)) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	// Check for invalid trailing characters.
+	if i < uint(len(s)) && s[i] != 'e' && s[i] != 'E' {
+		return 0, false // invalid suffix; caller handles error
+	}
+	// Parse optional exponent.
+	exp10 := -mantDigits
+	if i < uint(len(s)) && (s[i] == 'e' || s[i] == 'E') {
+		eExp, ok := parseExponent(s, i)
+		if !ok {
+			return 0, false // large/malformed exponent; caller falls back
+		}
+		exp10 += eExp
+	}
+	if result, ok := eiselLemire64(minus, d, exp10); ok {
+		return result, true
+	}
+	return 0, false // eiselLemire64 declined; caller falls back
+}
+
+// parseExponent parses the exponent part of a float string starting
+// at position i (which should point to 'e' or 'E'). It returns the exponent
+// value and true on success, or 0 and false on failure.
+func parseExponent(s string, i uint) (int, bool) {
+	i++ // skip 'e' or 'E'
+	if i >= uint(len(s)) {
+		return 0, false
+	}
+	expMinus := false
+	if s[i] == '+' || s[i] == '-' {
+		expMinus = s[i] == '-'
+		i++
+		if i >= uint(len(s)) {
+			return 0, false
+		}
+	}
+	exp := 0
+	j := i
+	for i < uint(len(s)) {
+		if s[i] >= '0' && s[i] <= '9' {
+			exp = exp*10 + int(s[i]-'0')
+			i++
+			if exp > 400 {
+				return 0, false // exponent too large
+			}
+			continue
+		}
+		break
+	}
+	if i <= j {
+		return 0, false
+	}
+	if i < uint(len(s)) {
+		return 0, false // unparsed tail
+	}
+	if expMinus {
+		exp = -exp
+	}
+	return exp, true
+}
+
 // ParseBestEffort parses floating-point number s.
 //
 // It is equivalent to strconv.ParseFloat(s, 64), but is faster.
@@ -263,6 +349,7 @@ func ParseBestEffort(s string) float64 {
 		return f
 	}
 
+	numFracDigits := 0
 	if s[i] == '.' {
 		// Parse fractional part.
 		i++
@@ -277,7 +364,11 @@ func ParseBestEffort(s string) float64 {
 				d = d*10 + uint64(s[i]-'0')
 				i++
 				if i-j >= uint(len(float64pow10)) {
-					// The mantissa is out of range. Fall back to standard parsing.
+					// The mantissa is out of range for the fast table.
+					// Try Eisel-Lemire with more digits before falling back.
+					if result, ok := parseMantissaOverflow(s, d, i, j, k, minus); ok {
+						return result
+					}
 					f, err := strconv.ParseFloat(s, 64)
 					if err != nil && !math.IsInf(f, 0) {
 						return 0
@@ -288,8 +379,9 @@ func ParseBestEffort(s string) float64 {
 			}
 			break
 		}
+		numFracDigits = int(i - k)
 		// Convert the entire mantissa to a float at once to avoid rounding errors.
-		f = float64(d) / float64pow10[i-k]
+		f = float64(d) / float64pow10[numFracDigits]
 		if i >= uint(len(s)) {
 			// Fast path - parsed fractional number.
 			if minus {
@@ -336,6 +428,15 @@ func ParseBestEffort(s string) float64 {
 		}
 		if expMinus {
 			exp = -exp
+		}
+		// Use Eisel-Lemire for precise exponent computation.
+		exp10 := int(exp) - numFracDigits
+		if result, ok := eiselLemire64(minus, d, exp10); ok {
+			if i >= uint(len(s)) {
+				return result
+			}
+			// Unparsed tail - invalid number.
+			return 0
 		}
 		f *= math.Pow10(int(exp))
 		if i >= uint(len(s)) {
@@ -416,6 +517,7 @@ func Parse(s string) (float64, error) {
 		return f, nil
 	}
 
+	numFracDigits := 0
 	if s[i] == '.' {
 		// Parse fractional part.
 		i++
@@ -430,7 +532,11 @@ func Parse(s string) (float64, error) {
 				d = d*10 + uint64(s[i]-'0')
 				i++
 				if i-j >= uint(len(float64pow10)) {
-					// The mantissa is out of range. Fall back to standard parsing.
+					// The mantissa is out of range for the fast table.
+					// Try Eisel-Lemire with more digits before falling back.
+					if result, ok := parseMantissaOverflow(s, d, i, j, k, minus); ok {
+						return result, nil
+					}
 					f, err := strconv.ParseFloat(s, 64)
 					if err != nil && !math.IsInf(f, 0) {
 						return 0, fmt.Errorf("cannot parse mantissa in %q: %s", s, err)
@@ -441,8 +547,9 @@ func Parse(s string) (float64, error) {
 			}
 			break
 		}
+		numFracDigits = int(i - k)
 		// Convert the entire mantissa to a float at once to avoid rounding errors.
-		f = float64(d) / float64pow10[i-k]
+		f = float64(d) / float64pow10[numFracDigits]
 		if i >= uint(len(s)) {
 			// Fast path - parsed fractional number.
 			if minus {
@@ -489,6 +596,15 @@ func Parse(s string) (float64, error) {
 		}
 		if expMinus {
 			exp = -exp
+		}
+		// Use Eisel-Lemire for precise exponent computation.
+		exp10 := int(exp) - numFracDigits
+		if result, ok := eiselLemire64(minus, d, exp10); ok {
+			if i >= uint(len(s)) {
+				return result, nil
+			}
+			// Unparsed tail - invalid number.
+			return 0, fmt.Errorf("cannot parse float64 from %q", s)
 		}
 		f *= math.Pow10(int(exp))
 		if i >= uint(len(s)) {

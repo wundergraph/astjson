@@ -128,21 +128,8 @@ func skipWS(s string) string {
 }
 
 func skipWSSlow(s string) string {
-	if len(s) == 0 {
-		return s
-	}
-
-	// Branch prediction optimization: check most common whitespace first
-	// Space (0x20) is most common, then newline, tab, carriage return
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c != 0x20 { // Most common whitespace
-			if c != 0x0A && c != 0x09 && c != 0x0D {
-				return s[i:]
-			}
-		}
-	}
-	return ""
+	n := countWhitespace(s)
+	return s[n:]
 }
 
 // kv represents a key-value pair in JSON objects.
@@ -496,17 +483,16 @@ func unescapeStringBestEffort(a arena.Arena, s string) string {
 // parseRawKey is similar to parseRawString, but is optimized
 // for small-sized keys without escape sequences.
 func parseRawKey(s string) (string, string, error) {
-	for i := 0; i < len(s); i++ {
-		if s[i] == '"' {
-			// Fast path.
-			return s[:i], s[i+1:], nil
-		}
-		if s[i] == '\\' {
-			// Slow path.
-			return parseRawString(s)
-		}
+	n := findQuoteOrBackslash(s)
+	if n >= len(s) {
+		return s, "", fmt.Errorf(`missing closing '"'`)
 	}
-	return s, "", fmt.Errorf(`missing closing '"'`)
+	if s[n] == '"' {
+		// Fast path — key has no escape sequences.
+		return s[:n], s[n+1:], nil
+	}
+	// Found '\\' — key contains escape sequences, delegate to slow path.
+	return parseRawString(s)
 }
 
 func parseRawString(s string) (string, string, error) {
@@ -544,26 +530,22 @@ func parseRawString(s string) (string, string, error) {
 func parseRawNumber(s string) (string, string, error) {
 	// The caller must ensure len(s) > 0
 
-	// Find the end of the number.
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		if (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || ch == 'e' || ch == 'E' || ch == '+' {
-			continue
-		}
-		if i == 0 || i == 1 && (s[0] == '-' || s[0] == '+') {
-			if len(s[i:]) >= 3 {
-				xs := s[i : i+3]
-				if strings.EqualFold(xs, "inf") || strings.EqualFold(xs, "nan") {
-					return s[:i+3], s[i+3:], nil
-				}
+	// Find the end of the number using fast scanning.
+	i := findNonNumber(s)
+	if i == 0 || i == 1 && (s[0] == '-' || s[0] == '+') {
+		// No digits found (or only a sign). Check for NaN/Inf.
+		if len(s[i:]) >= 3 {
+			xs := s[i : i+3]
+			if strings.EqualFold(xs, "inf") || strings.EqualFold(xs, "nan") {
+				return s[:i+3], s[i+3:], nil
 			}
-			return "", s, fmt.Errorf("unexpected char: %q", s[:1])
 		}
-		ns := s[:i]
-		s = s[i:]
-		return ns, s, nil
+		return "", s, fmt.Errorf("unexpected char: %q", s[:1])
 	}
-	return s, "", nil
+	if i >= len(s) {
+		return s, "", nil
+	}
+	return s[:i], s[i:], nil
 }
 
 // Object represents JSON object.
