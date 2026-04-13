@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/wundergraph/go-arena"
 )
 
 func BenchmarkParseRawString(b *testing.B) {
@@ -22,7 +25,7 @@ func benchmarkParseRawString(b *testing.B, s string) {
 	s = s[1:] // skip the opening '"'
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			rs, tail, err := parseRawString(s)
+			rs, tail, _, err := parseRawStringInfo(s)
 			if err != nil {
 				panic(fmt.Errorf("cannot parse %q: %s", s, err))
 			}
@@ -155,6 +158,76 @@ func BenchmarkMarshalTo(b *testing.B) {
 }
 
 var benchPoolMarshalTo Parser
+var benchDeepCopySink *Value
+var benchParserDeepCopy Parser
+var benchParserStructuralCopy Parser
+var benchStringBytesSink []byte
+var benchMarshalBytesSink []byte
+
+func BenchmarkDeepCopy(b *testing.B) {
+	b.Run("small", func(b *testing.B) {
+		benchmarkDeepCopy(b, smallFixture)
+	})
+	b.Run("medium", func(b *testing.B) {
+		benchmarkDeepCopy(b, mediumFixture)
+	})
+	b.Run("canada", func(b *testing.B) {
+		benchmarkDeepCopy(b, canadaFixture)
+	})
+	b.Run("20mb", func(b *testing.B) {
+		benchmarkDeepCopy(b, huge20MbFixture)
+	})
+}
+
+func BenchmarkStructuralCopy(b *testing.B) {
+	b.Run("small", func(b *testing.B) {
+		benchmarkStructuralCopy(b, smallFixture)
+	})
+	b.Run("medium", func(b *testing.B) {
+		benchmarkStructuralCopy(b, mediumFixture)
+	})
+	b.Run("canada", func(b *testing.B) {
+		benchmarkStructuralCopy(b, canadaFixture)
+	})
+	b.Run("20mb", func(b *testing.B) {
+		benchmarkStructuralCopy(b, huge20MbFixture)
+	})
+}
+
+func BenchmarkStringBytesRaw(b *testing.B) {
+	b.Run("plain", func(b *testing.B) {
+		benchmarkStringBytesRaw(b, Value{
+			t:         TypeString,
+			stringRaw: true,
+			s:         "plain string value",
+		})
+	})
+	b.Run("escaped", func(b *testing.B) {
+		benchmarkStringBytesRaw(b, Value{
+			t:         TypeString,
+			stringRaw: true,
+			s:         `he said \"hi\"\n`,
+		})
+	})
+}
+
+func BenchmarkMarshalStringValue(b *testing.B) {
+	b.Run("plain", func(b *testing.B) {
+		benchmarkMarshalStringValue(b, StringValue(nil, "plain string value"))
+	})
+	b.Run("escaped", func(b *testing.B) {
+		benchmarkMarshalStringValue(b, StringValue(nil, "he said \"hi\"\n"))
+	})
+}
+
+func BenchmarkMarshalObjectKey(b *testing.B) {
+	b.Run("plain", func(b *testing.B) {
+		benchmarkMarshalObjectKey(b, "plain_key")
+	})
+	b.Run("escaped", func(b *testing.B) {
+		benchmarkMarshalObjectKey(b, "he said \"hi\"\n")
+	})
+}
 
 func benchmarkMarshalTo(b *testing.B, s string) {
 	v, err := benchPoolMarshalTo.Parse(s)
@@ -172,6 +245,79 @@ func benchmarkMarshalTo(b *testing.B, s string) {
 			b = v.MarshalTo(b[:0])
 		}
 	})
+}
+
+func benchmarkDeepCopy(b *testing.B, s string) {
+	src, err := Parse(s)
+	if err != nil {
+		panic(fmt.Errorf("unexpected error: %s", err))
+	}
+
+	a := arena.NewMonotonicArena()
+	for i := 0; i < 2; i++ {
+		a.Reset()
+		benchDeepCopySink = benchParserDeepCopy.DeepCopy(a, src)
+	}
+	a.Reset()
+	b.ReportAllocs()
+	b.SetBytes(int64(len(s)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		a.Reset()
+		benchDeepCopySink = benchParserDeepCopy.DeepCopy(a, src)
+	}
+}
+
+func benchmarkStructuralCopy(b *testing.B, s string) {
+	srcArena := arena.NewMonotonicArena()
+	var srcParser Parser
+	src, err := srcParser.ParseWithArena(srcArena, s)
+	if err != nil {
+		panic(fmt.Errorf("unexpected error: %s", err))
+	}
+
+	dstArena := arena.NewMonotonicArena()
+	for i := 0; i < 2; i++ {
+		dstArena.Reset()
+		benchDeepCopySink = benchParserStructuralCopy.StructuralCopy(dstArena, src)
+	}
+	dstArena.Reset()
+	b.ReportAllocs()
+	b.SetBytes(int64(len(s)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dstArena.Reset()
+		benchDeepCopySink = benchParserStructuralCopy.StructuralCopy(dstArena, src)
+	}
+	runtime.KeepAlive(srcArena)
+}
+
+func benchmarkStringBytesRaw(b *testing.B, template Value) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		v := template
+		sb, err := v.StringBytes()
+		if err != nil {
+			panic(err)
+		}
+		benchStringBytesSink = sb
+	}
+}
+
+func benchmarkMarshalStringValue(b *testing.B, v *Value) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchMarshalBytesSink = v.MarshalTo(benchMarshalBytesSink[:0])
+	}
+}
+
+func benchmarkMarshalObjectKey(b *testing.B, key string) {
+	obj := ObjectValue(nil)
+	obj.Set(nil, key, IntValue(nil, 1))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchMarshalBytesSink = obj.MarshalTo(benchMarshalBytesSink[:0])
+	}
 }
 
 func BenchmarkParseComparison(b *testing.B) {

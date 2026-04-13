@@ -197,7 +197,7 @@ func validateString(s string) (string, string, error) {
 	}
 
 	// Slow path - escape sequences are present.
-	rs, tail, err := parseRawString(s)
+	rs, tail, _, err := parseRawStringInfo(s)
 	if err != nil {
 		return rs, tail, err
 	}

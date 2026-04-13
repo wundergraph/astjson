@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/wundergraph/go-arena"
 )
 
 func TestStartEndString(t *testing.T) {
@@ -111,4 +112,141 @@ func TestStringValueBytesNilArena(t *testing.T) {
 	sb, err := v.StringBytes()
 	require.NoError(t, err)
 	require.Equal(t, "hello", string(sb))
+}
+
+func TestStringValueTracksMarshalEscapeFlags(t *testing.T) {
+	plain := StringValue(nil, "plain")
+	require.False(t, plain.stringRaw)
+	require.False(t, plain.stringHasEscapes)
+	require.False(t, plain.stringNeedsEscape)
+
+	escaped := StringValue(nil, "he said \"hi\"\n")
+	require.False(t, escaped.stringRaw)
+	require.False(t, escaped.stringHasEscapes)
+	require.True(t, escaped.stringNeedsEscape)
+}
+
+func TestDeepCopyReusesLiteralSingletons(t *testing.T) {
+	a := arena.NewMonotonicArena()
+	var parser Parser
+
+	require.Same(t, valueTrue, parser.DeepCopy(a, TrueValue(nil)))
+	require.Same(t, valueFalse, parser.DeepCopy(a, FalseValue(nil)))
+	require.Same(t, valueNull, parser.DeepCopy(a, &Value{t: TypeNull}))
+}
+
+func TestDeepCopyReusesNestedLiteralSingletons(t *testing.T) {
+	src := ObjectValue(nil)
+	src.Set(nil, "t", TrueValue(nil))
+	src.Set(nil, "f", FalseValue(nil))
+	src.Set(nil, "n", &Value{t: TypeNull})
+
+	arr := ArrayValue(nil)
+	arr.SetArrayItem(nil, 0, TrueValue(nil))
+	arr.SetArrayItem(nil, 1, FalseValue(nil))
+	arr.SetArrayItem(nil, 2, &Value{t: TypeNull})
+	src.Set(nil, "arr", arr)
+
+	a := arena.NewMonotonicArena()
+	var parser Parser
+	cp := parser.DeepCopy(a, src)
+
+	require.NotSame(t, src, cp)
+	require.Same(t, valueTrue, cp.Get("t"))
+	require.Same(t, valueFalse, cp.Get("f"))
+	require.Same(t, valueNull, cp.Get("n"))
+
+	items := cp.GetArray("arr")
+	require.Len(t, items, 3)
+	require.Same(t, valueTrue, items[0])
+	require.Same(t, valueFalse, items[1])
+	require.Same(t, valueNull, items[2])
+}
+
+func TestPlanDeepCopyScratchReuse(t *testing.T) {
+	src := MustParse(`{"a":{"b":"x"},"c":[1,2,3],"d":{"e":{"f":true}}}`)
+
+	var scratch arenaPlanScratch
+	plan := planDeepCopyWithScratch(src, &scratch)
+	objectCap := cap(scratch.deepCopyObjectSizes)
+	arrayCap := cap(scratch.deepCopyArraySizes)
+	if objectCap == 0 {
+		t.Fatalf("expected object scratch capacity to be retained")
+	}
+	if arrayCap == 0 {
+		t.Fatalf("expected array scratch capacity to be retained")
+	}
+	if len(plan.objectSizes) == 0 {
+		t.Fatalf("expected plan to contain object sizes")
+	}
+	if len(plan.arraySizes) == 0 {
+		t.Fatalf("expected plan to contain array sizes")
+	}
+
+	plan = planDeepCopyWithScratch(MustParse(`{"x":1}`), &scratch)
+	if cap(scratch.deepCopyObjectSizes) != objectCap {
+		t.Fatalf("object scratch capacity changed: got %d want %d", cap(scratch.deepCopyObjectSizes), objectCap)
+	}
+	if cap(scratch.deepCopyArraySizes) != arrayCap {
+		t.Fatalf("array scratch capacity changed: got %d want %d", cap(scratch.deepCopyArraySizes), arrayCap)
+	}
+	if len(plan.objectSizes) != 1 {
+		t.Fatalf("expected second plan to contain one object size, got %d", len(plan.objectSizes))
+	}
+	if len(plan.arraySizes) != 0 {
+		t.Fatalf("expected second plan to contain no array sizes, got %d", len(plan.arraySizes))
+	}
+}
+
+func TestStructuralCopyClonesContainersAndAliasesLeaves(t *testing.T) {
+	a := arena.NewMonotonicArena()
+
+	leafString := StringValue(a, "hello")
+	leafNumber := IntValue(a, 42)
+	leafBool := TrueValue(a)
+
+	nested := ObjectValue(a)
+	nested.Set(a, "name", leafString)
+
+	innerObj := ObjectValue(a)
+	innerObj.Set(a, "ok", leafBool)
+
+	arr := ArrayValue(a)
+	arr.SetArrayItem(a, 0, leafNumber)
+	arr.SetArrayItem(a, 1, innerObj)
+
+	src := ObjectValue(a)
+	src.Set(a, "nested", nested)
+	src.Set(a, "arr", arr)
+	src.Set(a, "scalar", leafString)
+
+	var parser Parser
+	cp := parser.StructuralCopy(a, src)
+
+	require.NotSame(t, src, cp)
+	require.NotSame(t, nested, cp.Get("nested"))
+	require.NotSame(t, arr, cp.Get("arr"))
+	require.Same(t, leafString, cp.Get("nested").Get("name"))
+	require.Same(t, leafString, cp.Get("scalar"))
+
+	items := cp.GetArray("arr")
+	require.Len(t, items, 2)
+	require.Same(t, leafNumber, items[0])
+	require.NotSame(t, innerObj, items[1])
+	require.Same(t, leafBool, items[1].Get("ok"))
+
+	cp.Get("nested").Set(a, "extra", IntValue(a, 7))
+	require.Nil(t, nested.Get("extra"))
+}
+
+func TestStructuralCopyNilArena(t *testing.T) {
+	v := StringValue(nil, "hello")
+	var parser Parser
+	require.Same(t, v, parser.StructuralCopy(nil, v))
+}
+
+func TestStructuralCopyNilValue(t *testing.T) {
+	a := arena.NewMonotonicArena()
+	var parser Parser
+	require.Nil(t, parser.StructuralCopy(a, nil))
 }

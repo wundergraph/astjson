@@ -48,7 +48,7 @@ var (
 //
 // GC safety: when array is arena-allocated (a is non-nil), value must also be
 // arena-allocated from the same arena, or be a package-level singleton.
-// Use [DeepCopy] on value before calling if value is heap-allocated.
+// Use [Parser.DeepCopy] on value before calling if value is heap-allocated.
 // See the package documentation section "Mixing Arena and Heap Values".
 func AppendToArray(a arena.Arena, array, value *Value) {
 	if array.Type() != TypeArray {
@@ -97,57 +97,361 @@ func ValueIsNonNull(v *Value) bool {
 	return true
 }
 
-// DeepCopy returns a deep copy of v allocated entirely on arena a.
-// All string data, slice backing arrays, child Values, and object keys
-// are arena-allocated, making the result self-contained within a.
+// DeepCopy returns a deep copy of v allocated on arena a.
+// All string data, slice backing arrays, object keys, and non-literal child
+// Values are arena-allocated, making the result self-contained within a except
+// for the immutable package-level singleton nodes used for true, false, and null.
 //
-// Use DeepCopy when inserting a heap-parsed *Value into an arena-allocated
+// Use Parser.DeepCopy when inserting a heap-parsed *Value into an arena-allocated
 // container (via [Object.Set], [Value.SetArrayItem], [AppendArrayItems], etc.)
 // to prevent the GC from collecting the value while the arena container still
 // references it. Example:
 //
+//	var parser Parser
 //	heapVal, _ := Parse(`"hello"`)                       // heap-allocated
-//	arenaObj.Set(a, "key", DeepCopy(a, heapVal))         // safe: copy lives in a
+//	arenaObj.Set(a, "key", parser.DeepCopy(a, heapVal))  // safe: copy lives in a
 //
-// When a is nil (heap mode), DeepCopy returns v unchanged. In heap mode the GC
+// When a is nil (heap mode), Parser.DeepCopy returns v unchanged. In heap mode the GC
 // traces all references normally, so no copy is needed.
-func DeepCopy(a arena.Arena, v *Value) *Value {
+func (p *Parser) DeepCopy(a arena.Arena, v *Value) *Value {
 	if v == nil || a == nil {
 		return v
 	}
-	cp := arena.Allocate[Value](a)
-	cp.t = v.t
+
+	scratch := p.ensureArenaScratch()
+	plan := planDeepCopyWithScratch(v, scratch)
+	state := newDeepCopyFillState(a, plan)
+	return state.copyValue(v)
+}
+
+// StructuralCopy clones only the container structure of v onto arena a.
+// Object and array nodes are reallocated on a, while all leaf nodes and object
+// key strings are aliased from the source tree unchanged.
+//
+// This is intended for trees whose leaves already have the same lifetime as the
+// cloned structure, typically when both source and destination are used within
+// the same request and reset together. It is not a safe replacement for
+// DeepCopy when moving heap-allocated leaves into arena-owned containers.
+//
+// When a is nil (heap mode), StructuralCopy returns v unchanged.
+func (p *Parser) StructuralCopy(a arena.Arena, v *Value) *Value {
+	if v == nil || a == nil {
+		return v
+	}
+
+	scratch := p.ensureArenaScratch()
+	plan := planStructuralCopyWithScratch(v, scratch)
+	state := newDeepCopyFillState(a, plan)
+	return state.structuralCopyValue(v)
+}
+
+type deepCopyPlan struct {
+	values      int
+	kvs         int
+	arrayElems  int
+	stringBytes int
+
+	objectSizes []int
+	arraySizes  []int
+}
+
+type deepCopyFillState struct {
+	a    arena.Arena
+	plan deepCopyPlan
+
+	values     []Value
+	kvs        []kv
+	objectRefs []*kv
+	arrayRefs  []*Value
+	strings    []byte
+
+	valuePos     int
+	kvPos        int
+	objectRefPos int
+	arrayRefPos  int
+	stringPos    int
+	objectPos    int
+	arrayPos     int
+}
+
+type arenaAllocatedSlabs struct {
+	values     []Value
+	kvs        []kv
+	objectRefs []*kv
+	arrayRefs  []*Value
+	strings    []byte
+}
+
+func planDeepCopyWithScratch(v *Value, scratch *arenaPlanScratch) deepCopyPlan {
+	var plan deepCopyPlan
+	if scratch != nil {
+		plan.objectSizes = scratch.deepCopyObjectSizes[:0]
+		plan.arraySizes = scratch.deepCopyArraySizes[:0]
+	}
+	countDeepCopyValue(&plan, v)
+	if scratch != nil {
+		scratch.deepCopyObjectSizes = plan.objectSizes[:0]
+		scratch.deepCopyArraySizes = plan.arraySizes[:0]
+	}
+	return plan
+}
+
+func planStructuralCopyWithScratch(v *Value, scratch *arenaPlanScratch) deepCopyPlan {
+	var plan deepCopyPlan
+	if scratch != nil {
+		plan.objectSizes = scratch.deepCopyObjectSizes[:0]
+		plan.arraySizes = scratch.deepCopyArraySizes[:0]
+	}
+	countStructuralCopyValue(&plan, v)
+	if scratch != nil {
+		scratch.deepCopyObjectSizes = plan.objectSizes[:0]
+		scratch.deepCopyArraySizes = plan.arraySizes[:0]
+	}
+	return plan
+}
+
+func countDeepCopyValue(plan *deepCopyPlan, v *Value) {
+	if v == nil {
+		return
+	}
+
+	switch v.t {
+	case TypeTrue, TypeFalse, TypeNull:
+		return
+	}
+
+	plan.values++
 	switch v.t {
 	case TypeString, TypeNumber:
-		cp.s = arenaString(a, v.s)
+		plan.stringBytes += len(v.s)
 	case TypeObject:
-		cp.o = deepCopyObject(a, &v.o)
-	case TypeArray:
-		if len(v.a) > 0 {
-			cp.a = arena.AllocateSlice[*Value](a, len(v.a), len(v.a))
-			for i, item := range v.a {
-				cp.a[i] = DeepCopy(a, item)
-			}
+		plan.objectSizes = append(plan.objectSizes, len(v.o.kvs))
+		plan.kvs += len(v.o.kvs)
+		for _, entry := range v.o.kvs {
+			plan.stringBytes += len(entry.k)
+			countDeepCopyValue(plan, entry.v)
 		}
-	// TypeTrue, TypeFalse, TypeNull need no extra work: cp.t = v.t (line 119) is sufficient.
+	case TypeArray:
+		plan.arraySizes = append(plan.arraySizes, len(v.a))
+		plan.arrayElems += len(v.a)
+		for _, item := range v.a {
+			countDeepCopyValue(plan, item)
+		}
 	}
+}
+
+func countStructuralCopyValue(plan *deepCopyPlan, v *Value) {
+	if v == nil {
+		return
+	}
+
+	switch v.t {
+	case TypeObject:
+		plan.values++
+		plan.objectSizes = append(plan.objectSizes, len(v.o.kvs))
+		plan.kvs += len(v.o.kvs)
+		for _, entry := range v.o.kvs {
+			countStructuralCopyValue(plan, entry.v)
+		}
+	case TypeArray:
+		plan.values++
+		plan.arraySizes = append(plan.arraySizes, len(v.a))
+		plan.arrayElems += len(v.a)
+		for _, item := range v.a {
+			countStructuralCopyValue(plan, item)
+		}
+	}
+}
+
+func allocateArenaSlabs(a arena.Arena, values, kvs, arrayElems, stringBytes int) arenaAllocatedSlabs {
+	var slabs arenaAllocatedSlabs
+	if values > 0 {
+		slabs.values = arena.AllocateSlice[Value](a, values, values)
+	}
+	if kvs > 0 {
+		slabs.kvs = arena.AllocateSlice[kv](a, kvs, kvs)
+		slabs.objectRefs = arena.AllocateSlice[*kv](a, kvs, kvs)
+	}
+	if arrayElems > 0 {
+		slabs.arrayRefs = arena.AllocateSlice[*Value](a, arrayElems, arrayElems)
+	}
+	if stringBytes > 0 {
+		slabs.strings = arena.AllocateSlice[byte](a, stringBytes, stringBytes)
+	}
+	return slabs
+}
+
+func newDeepCopyFillState(a arena.Arena, plan deepCopyPlan) deepCopyFillState {
+	state := deepCopyFillState{a: a, plan: plan}
+	slabs := allocateArenaSlabs(a, plan.values, plan.kvs, plan.arrayElems, plan.stringBytes)
+	state.values = slabs.values
+	state.kvs = slabs.kvs
+	state.objectRefs = slabs.objectRefs
+	state.arrayRefs = slabs.arrayRefs
+	state.strings = slabs.strings
+	return state
+}
+
+func (f *deepCopyFillState) allocValue() *Value {
+	v := &f.values[f.valuePos]
+	f.valuePos++
+	return v
+}
+
+func (f *deepCopyFillState) allocKV() *kv {
+	entry := &f.kvs[f.kvPos]
+	f.kvPos++
+	return entry
+}
+
+func (f *deepCopyFillState) allocObjectRefs(n int) []*kv {
+	start := f.objectRefPos
+	f.objectRefPos += n
+	return f.objectRefs[start:f.objectRefPos]
+}
+
+func (f *deepCopyFillState) allocArrayRefs(n int) []*Value {
+	start := f.arrayRefPos
+	f.arrayRefPos += n
+	return f.arrayRefs[start:f.arrayRefPos]
+}
+
+func (f *deepCopyFillState) allocString(n int) []byte {
+	start := f.stringPos
+	f.stringPos += n
+	return f.strings[start:f.stringPos]
+}
+
+func (f *deepCopyFillState) nextObjectSize() int {
+	size := f.plan.objectSizes[f.objectPos]
+	f.objectPos++
+	return size
+}
+
+func (f *deepCopyFillState) nextArraySize() int {
+	size := f.plan.arraySizes[f.arrayPos]
+	f.arrayPos++
+	return size
+}
+
+func (f *deepCopyFillState) copyString(s string) string {
+	if len(s) == 0 {
+		return ""
+	}
+	if len(f.strings) == 0 {
+		return arenaString(f.a, s)
+	}
+	buf := f.allocString(len(s))
+	copy(buf, s)
+	return b2s(buf)
+}
+
+func (f *deepCopyFillState) copyValue(v *Value) *Value {
+	if v == nil {
+		return nil
+	}
+
+	switch v.t {
+	case TypeTrue:
+		return valueTrue
+	case TypeFalse:
+		return valueFalse
+	case TypeNull:
+		return valueNull
+	}
+
+	cp := f.allocValue()
+	cp.t = v.t
+	cp.stringRaw = v.stringRaw
+	cp.stringHasEscapes = v.stringHasEscapes
+	cp.stringNeedsEscape = v.stringNeedsEscape
+	cp.s = ""
+	cp.a = nil
+	cp.o.reset()
+
+	switch v.t {
+	case TypeString, TypeNumber:
+		cp.s = f.copyString(v.s)
+	case TypeObject:
+		count := f.nextObjectSize()
+		if count == 0 {
+			return cp
+		}
+		cp.o.kvs = f.allocObjectRefs(count)
+		for i, entry := range v.o.kvs {
+			newKV := f.allocKV()
+			newKV.k = f.copyString(entry.k)
+			newKV.keyUnescaped = true
+			newKV.keyNeedsEscape = entry.keyNeedsEscape
+			newKV.v = f.copyValue(entry.v)
+			cp.o.kvs[i] = newKV
+		}
+	case TypeArray:
+		count := f.nextArraySize()
+		if count == 0 {
+			return cp
+		}
+		cp.a = f.allocArrayRefs(count)
+		for i, item := range v.a {
+			cp.a[i] = f.copyValue(item)
+		}
+	}
+
 	return cp
 }
 
-func deepCopyObject(a arena.Arena, o *Object) Object {
-	var result Object
-	if len(o.kvs) == 0 {
-		return result
+func (f *deepCopyFillState) structuralCopyValue(v *Value) *Value {
+	if v == nil {
+		return nil
 	}
-	result.kvs = arena.AllocateSlice[*kv](a, len(o.kvs), len(o.kvs))
-	for i, entry := range o.kvs {
-		newKv := arena.Allocate[kv](a)
-		newKv.k = arenaString(a, entry.k)
-		newKv.keyUnescaped = true
-		newKv.v = DeepCopy(a, entry.v)
-		result.kvs[i] = newKv
+
+	switch v.t {
+	case TypeObject:
+		cp := f.allocValue()
+		cp.t = TypeObject
+		cp.stringRaw = false
+		cp.stringHasEscapes = false
+		cp.stringNeedsEscape = false
+		cp.s = ""
+		cp.a = nil
+		cp.o.reset()
+
+		count := f.nextObjectSize()
+		if count == 0 {
+			return cp
+		}
+		cp.o.kvs = f.allocObjectRefs(count)
+		for i, entry := range v.o.kvs {
+			newKV := f.allocKV()
+			newKV.k = entry.k
+			newKV.keyUnescaped = entry.keyUnescaped
+			newKV.keyNeedsEscape = entry.keyNeedsEscape
+			newKV.v = f.structuralCopyValue(entry.v)
+			cp.o.kvs[i] = newKV
+		}
+		return cp
+	case TypeArray:
+		cp := f.allocValue()
+		cp.t = TypeArray
+		cp.stringRaw = false
+		cp.stringHasEscapes = false
+		cp.stringNeedsEscape = false
+		cp.s = ""
+		cp.a = nil
+		cp.o.reset()
+
+		count := f.nextArraySize()
+		if count == 0 {
+			return cp
+		}
+		cp.a = f.allocArrayRefs(count)
+		for i, item := range v.a {
+			cp.a[i] = f.structuralCopyValue(item)
+		}
+		return cp
+	default:
+		return v
 	}
-	return result
 }
 
 // AppendArrayItems appends all elements from right into v. Both v and right
@@ -155,7 +459,7 @@ func deepCopyObject(a arena.Arena, o *Object) Object {
 // backing slice.
 //
 // GC safety: when v is arena-allocated (a is non-nil), right and its elements
-// must also be arena-allocated from the same arena. Use [DeepCopy] on right
+// must also be arena-allocated from the same arena. Use [Parser.DeepCopy] on right
 // before calling if right is heap-allocated. See the package documentation
 // section "Mixing Arena and Heap Values".
 func (v *Value) AppendArrayItems(a arena.Arena, right *Value) {

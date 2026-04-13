@@ -1188,6 +1188,7 @@ func TestArenaGCSafety_StringValueBytes_HeapInput(t *testing.T) {
 func TestArenaGCSafety_DeepCopy_ObjectSet(t *testing.T) {
 	old := debug.SetGCPercent(1)
 	defer debug.SetGCPercent(old)
+	var parser Parser
 
 	for i := 0; i < gcTestIterations; i++ {
 		a := arena.NewMonotonicArena()
@@ -1196,7 +1197,7 @@ func TestArenaGCSafety_DeepCopy_ObjectSet(t *testing.T) {
 		heapVal := StringValue(nil, heapString("safe", i))
 
 		// DeepCopy copies heapVal into arena a before storing.
-		obj.Set(a, "key", DeepCopy(a, heapVal))
+		obj.Set(a, "key", parser.DeepCopy(a, heapVal))
 
 		// Drop the only external reference to heapVal.
 		heapVal = nil //nolint:ineffassign
@@ -1221,6 +1222,7 @@ func TestArenaGCSafety_DeepCopy_ObjectSet(t *testing.T) {
 func TestArenaGCSafety_DeepCopy_SetArrayItem(t *testing.T) {
 	old := debug.SetGCPercent(1)
 	defer debug.SetGCPercent(old)
+	var parser Parser
 
 	for i := 0; i < gcTestIterations; i++ {
 		a := arena.NewMonotonicArena()
@@ -1228,7 +1230,7 @@ func TestArenaGCSafety_DeepCopy_SetArrayItem(t *testing.T) {
 		arr := ArrayValue(a)
 		heapVal := IntValue(nil, i)
 
-		arr.SetArrayItem(a, 0, DeepCopy(a, heapVal))
+		arr.SetArrayItem(a, 0, parser.DeepCopy(a, heapVal))
 
 		heapVal = nil //nolint:ineffassign
 		forceGC()
@@ -1254,6 +1256,7 @@ func TestArenaGCSafety_DeepCopy_SetArrayItem(t *testing.T) {
 func TestArenaGCSafety_DeepCopy_NestedObject(t *testing.T) {
 	old := debug.SetGCPercent(1)
 	defer debug.SetGCPercent(old)
+	var parser Parser
 
 	for i := 0; i < gcTestIterations; i++ {
 		a := arena.NewMonotonicArena()
@@ -1268,7 +1271,7 @@ func TestArenaGCSafety_DeepCopy_NestedObject(t *testing.T) {
 		heapObj.Set(nil, "scores", heapArr)
 
 		arenaContainer := ObjectValue(a)
-		arenaContainer.Set(a, "data", DeepCopy(a, heapObj))
+		arenaContainer.Set(a, "data", parser.DeepCopy(a, heapObj))
 
 		// Drop all heap references.
 		heapObj = nil //nolint:ineffassign
@@ -1298,22 +1301,24 @@ func TestArenaGCSafety_DeepCopy_NestedObject(t *testing.T) {
 	}
 }
 
-// TestArenaGCSafety_DeepCopy_NilArena verifies that DeepCopy(nil, v) is a
+// TestArenaGCSafety_DeepCopy_NilArena verifies that parser.DeepCopy(nil, v) is a
 // no-op and returns v unchanged.
 func TestArenaGCSafety_DeepCopy_NilArena(t *testing.T) {
 	v := StringValue(nil, "hello")
-	got := DeepCopy(nil, v)
+	var parser Parser
+	got := parser.DeepCopy(nil, v)
 	if got != v {
-		t.Fatal("DeepCopy(nil, v) must return v unchanged")
+		t.Fatal("parser.DeepCopy(nil, v) must return v unchanged")
 	}
 }
 
-// TestArenaGCSafety_DeepCopy_NilValue verifies that DeepCopy(a, nil) returns nil.
+// TestArenaGCSafety_DeepCopy_NilValue verifies that parser.DeepCopy(a, nil) returns nil.
 func TestArenaGCSafety_DeepCopy_NilValue(t *testing.T) {
 	a := arena.NewMonotonicArena()
-	got := DeepCopy(a, nil)
+	var parser Parser
+	got := parser.DeepCopy(a, nil)
 	if got != nil {
-		t.Fatal("DeepCopy(a, nil) must return nil")
+		t.Fatal("parser.DeepCopy(a, nil) must return nil")
 	}
 	runtime.KeepAlive(a)
 }
@@ -1323,7 +1328,8 @@ func TestArenaGCSafety_DeepCopy_NilValue(t *testing.T) {
 func TestArenaGCSafety_DeepCopy_EmptyObject(t *testing.T) {
 	a := arena.NewMonotonicArena()
 	obj := ObjectValue(a)
-	cp := DeepCopy(a, obj)
+	var parser Parser
+	cp := parser.DeepCopy(a, obj)
 	if cp.Type() != TypeObject {
 		t.Fatalf("expected TypeObject, got %v", cp.Type())
 	}

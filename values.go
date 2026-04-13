@@ -18,6 +18,7 @@ func StringValue(a arena.Arena, s string) *Value {
 	v := arena.Allocate[Value](a)
 	v.t = TypeString
 	v.s = arenaString(a, s)
+	v.stringNeedsEscape = hasSpecialChars(s)
 	return v
 }
 
@@ -39,6 +40,7 @@ func StringValueBytes(a arena.Arena, b []byte) *Value {
 	} else {
 		v.s = b2s(b)
 	}
+	v.stringNeedsEscape = hasSpecialChars(v.s)
 	return v
 }
 

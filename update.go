@@ -48,7 +48,7 @@ func (v *Value) Del(key string) {
 // GC safety: when o is arena-allocated (a is non-nil), value must also be
 // arena-allocated from the same arena, or be a package-level singleton.
 // Storing a heap-allocated *Value in arena memory is unsafe because the GC
-// does not trace pointers within arena buffers. Use [DeepCopy] to copy a
+// does not trace pointers within arena buffers. Use [Parser.DeepCopy] to copy a
 // heap-allocated value onto the arena before passing it here. See the package
 // documentation section "Mixing Arena and Heap Values" for details.
 func (o *Object) Set(a arena.Arena, key string, value *Value) {
@@ -75,6 +75,7 @@ func (o *Object) Set(a arena.Arena, key string, value *Value) {
 	kv.k = arenaString(a, key)
 	kv.v = value
 	kv.keyUnescaped = true // New keys are already unescaped since they come from user input
+	kv.keyNeedsEscape = hasSpecialChars(key)
 }
 
 // Set sets (key, value) entry in the array or object v.
@@ -103,7 +104,7 @@ func (v *Value) Set(a arena.Arena, key string, value *Value) {
 //
 // GC safety: when v is arena-allocated (a is non-nil), value must also be
 // arena-allocated from the same arena, or be a package-level singleton.
-// Use [DeepCopy] to copy a heap-allocated value onto the arena before passing
+// Use [Parser.DeepCopy] to copy a heap-allocated value onto the arena before passing
 // it here. See the package documentation section "Mixing Arena and Heap Values".
 func (v *Value) SetArrayItem(a arena.Arena, idx int, value *Value) {
 	if v == nil || v.t != TypeArray {

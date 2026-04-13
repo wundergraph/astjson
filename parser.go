@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"unicode/utf16"
-	"unicode/utf8"
 
 	"github.com/wundergraph/astjson/fastfloat"
 	"github.com/wundergraph/go-arena"
@@ -46,6 +44,17 @@ func NewParseError(err error) *ParseError {
 // Parser cannot be used from concurrent goroutines.
 // Use per-goroutine parsers or ParserPool instead.
 type Parser struct {
+	arenaScratch *arenaPlanScratch
+}
+
+func (p *Parser) ensureArenaScratch() *arenaPlanScratch {
+	if p == nil {
+		return nil
+	}
+	if p.arenaScratch == nil {
+		p.arenaScratch = &arenaPlanScratch{}
+	}
+	return p.arenaScratch
 }
 
 // Parse parses s containing JSON.
@@ -70,6 +79,7 @@ func (p *Parser) Parse(s string) (*Value, error) {
 func (p *Parser) ParseWithArena(a arena.Arena, s string) (*Value, error) {
 	if a != nil {
 		s = arenaString(a, s)
+		return parseArenaTwoPass(p, a, s)
 	}
 	return p.parse(a, s)
 }
@@ -100,7 +110,7 @@ func (p *Parser) ParseBytesWithArena(a arena.Arena, b []byte) (*Value, error) {
 	if a != nil {
 		ab := arena.AllocateSlice[byte](a, len(b), len(b))
 		copy(ab, b)
-		return p.parse(a, b2s(ab))
+		return parseArenaTwoPass(p, a, b2s(ab))
 	}
 	return p.parse(nil, b2s(b))
 }
@@ -148,10 +158,10 @@ func skipWSSlow(s string) string {
 // kv represents a key-value pair in JSON objects.
 // Cache-friendly layout: hot data first
 type kv struct {
-	keyUnescaped bool   // 1 byte - tracks if this specific key has been unescaped
-	k            string // 16 bytes
-	v            *Value // 8 bytes
-	// Total: 25 bytes - still fits in cache line
+	keyUnescaped   bool // tracks if this specific key has been unescaped
+	keyNeedsEscape bool // keyUnescaped only: decoded key needs escaping on marshal
+	k              string
+	v              *Value
 }
 
 // MaxDepth is the maximum depth for nested JSON.
@@ -171,13 +181,17 @@ func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 	switch s[0] {
 	case '"':
 		// String - most common in JSON
-		ss, tail, err := parseRawString(s[1:])
+		ss, tail, hasEscape, err := parseRawStringInfo(s[1:])
 		if err != nil {
 			return nil, tail, fmt.Errorf("cannot parse string: %s", err)
 		}
 		v := arena.Allocate[Value](a)
 		v.t = TypeString
-		v.s = unescapeStringBestEffort(a, ss)
+		if hasEscape {
+			v.s, v.stringNeedsEscape = unescapeStringBestEffortInfo(a, ss)
+		} else {
+			v.s = ss
+		}
 		return v, tail, nil
 	case '{':
 		// Object - very common
@@ -304,11 +318,14 @@ func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 		if len(s) == 0 || s[0] != '"' {
 			return nil, s, fmt.Errorf(`cannot find opening '"" for object key`)
 		}
-		kv.k, s, err = parseRawKey(s[1:])
+		var keyHasEscape bool
+		kv.k, s, keyHasEscape, err = parseRawKey(s[1:])
 		if err != nil {
 			return nil, s, fmt.Errorf("cannot parse object key: %s", err)
 		}
-		kv.k = unescapeStringBestEffort(a, kv.k)
+		if keyHasEscape {
+			kv.k, kv.keyNeedsEscape = unescapeStringBestEffortInfo(a, kv.k)
+		}
 		kv.keyUnescaped = true
 		s = skipWS(s)
 		if len(s) == 0 || s[0] != ':' {
@@ -337,16 +354,13 @@ func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 	}
 }
 
-func escapeString(dst []byte, s string) []byte {
-	if !hasSpecialChars(s) {
-		// Fast path - nothing to escape.
+func appendQuotedString(dst []byte, s string, needsEscape bool) []byte {
+	if !needsEscape {
 		dst = append(dst, '"')
 		dst = append(dst, s...)
 		dst = append(dst, '"')
 		return dst
 	}
-
-	// Slow path.
 	return escapeStringSlowPath(dst, s)
 }
 
@@ -404,119 +418,57 @@ func escapeStringSlowPath(dst []byte, s string) []byte {
 	return dst
 }
 
-func unescapeStringBestEffort(a arena.Arena, s string) string {
-	n := strings.IndexByte(s, '\\')
-	if n < 0 {
-		// Fast path - nothing to unescape.
-		return s
+func unescapeStringBestEffortInfo(a arena.Arena, s string) (string, bool) {
+	if strings.IndexByte(s, '\\') < 0 {
+		return s, hasSpecialChars(s)
 	}
+	n, _ := decodeStringBestEffort(nil, s)
+	buf := arena.AllocateSlice[byte](a, n, n)
+	_, needsEscape := decodeStringBestEffort(buf, s)
+	return b2s(buf), needsEscape
+}
 
-	// Estimate capacity to avoid frequent reallocations
-	estimatedCap := len(s) + 4
-	b := arena.AllocateSlice[byte](a, 0, estimatedCap)
-
-	// Add the initial part before the first escape
-	b = arena.SliceAppend(a, b, []byte(s[:n])...)
-	s = s[n+1:]
-
-	for len(s) > 0 {
-		ch := s[0]
-		s = s[1:]
-		switch ch {
-		case '"':
-			b = arena.SliceAppend(a, b, '"')
-		case '\\':
-			b = arena.SliceAppend(a, b, '\\')
-		case '/':
-			b = arena.SliceAppend(a, b, '/')
-		case 'b':
-			b = arena.SliceAppend(a, b, '\b')
-		case 'f':
-			b = arena.SliceAppend(a, b, '\f')
-		case 'n':
-			b = arena.SliceAppend(a, b, '\n')
-		case 'r':
-			b = arena.SliceAppend(a, b, '\r')
-		case 't':
-			b = arena.SliceAppend(a, b, '\t')
-		case 'u':
-			if len(s) < 4 {
-				// Too short escape sequence. Just store it unchanged.
-				b = arena.SliceAppend(a, b, []byte("\\u")...)
-				break
-			}
-			xs := s[:4]
-			x, err := strconv.ParseUint(xs, 16, 16)
-			if err != nil {
-				// Invalid escape sequence. Just store it unchanged.
-				b = arena.SliceAppend(a, b, []byte("\\u")...)
-				break
-			}
-			s = s[4:]
-			if !utf16.IsSurrogate(rune(x)) {
-				var buf [utf8.UTFMax]byte
-				n := utf8.EncodeRune(buf[:], rune(x))
-				b = arena.SliceAppend(a, b, buf[:n]...)
-				break
-			}
-
-			// Surrogate.
-			// See https://en.wikipedia.org/wiki/Universal_Character_Set_characters#Surrogates
-			if len(s) < 6 || s[0] != '\\' || s[1] != 'u' {
-				b = arena.SliceAppend(a, b, []byte("\\u")...)
-				b = arena.SliceAppend(a, b, []byte(xs)...)
-				break
-			}
-			x1, err := strconv.ParseUint(s[2:6], 16, 16)
-			if err != nil {
-				b = arena.SliceAppend(a, b, []byte("\\u")...)
-				b = arena.SliceAppend(a, b, []byte(xs)...)
-				break
-			}
-			r := utf16.DecodeRune(rune(x), rune(x1))
-			var buf [utf8.UTFMax]byte
-			rn := utf8.EncodeRune(buf[:], r)
-			b = arena.SliceAppend(a, b, buf[:rn]...)
-			s = s[6:]
-		default:
-			// Unknown escape sequence. Just store it unchanged.
-			b = arena.SliceAppend(a, b, '\\', ch)
-		}
-		n = strings.IndexByte(s, '\\')
-		if n < 0 {
-			b = arena.SliceAppend(a, b, []byte(s)...)
-			break
-		}
-		b = arena.SliceAppend(a, b, []byte(s[:n])...)
-		s = s[n+1:]
-	}
-	return b2s(b)
+func runeNeedsEscaping(r rune) bool {
+	return r == '"' || r == '\\' || r < 0x20
 }
 
 // parseRawKey is similar to parseRawString, but is optimized
 // for small-sized keys without escape sequences.
-func parseRawKey(s string) (string, string, error) {
+func parseRawKey(s string) (string, string, bool, error) {
 	for i := 0; i < len(s); i++ {
 		if s[i] == '"' {
 			// Fast path.
-			return s[:i], s[i+1:], nil
+			return s[:i], s[i+1:], false, nil
 		}
 		if s[i] == '\\' {
 			// Slow path.
-			return parseRawString(s)
+			return parseRawStringInfo(s)
 		}
 	}
-	return s, "", fmt.Errorf(`missing closing '"'`)
+	return s, "", false, fmt.Errorf(`missing closing '"'`)
 }
 
-func parseRawString(s string) (string, string, error) {
+// parseRawStringInfo scans the JSON string payload starting immediately after
+// the opening quote.
+//
+// It returns:
+//   - raw: the substring between the opening and closing quotes, without the
+//     surrounding quote bytes
+//   - tail: the remaining input immediately after the closing quote
+//   - hasEscape: whether raw contains at least one backslash escape sequence
+//   - err: a non-nil error if no valid closing quote is found
+func parseRawStringInfo(s string) (string, string, bool, error) {
 	n := strings.IndexByte(s, '"')
 	if n < 0 {
-		return s, "", fmt.Errorf(`missing closing '"'`)
+		return s, "", false, fmt.Errorf(`missing closing '"'`)
+	}
+	if strings.IndexByte(s[:n], '\\') < 0 {
+		// Fast path. No escape sequences before the closing quote.
+		return s[:n], s[n+1:], false, nil
 	}
 	if n == 0 || s[n-1] != '\\' {
-		// Fast path. No escaped ".
-		return s[:n], s[n+1:], nil
+		// Fast path. Escape sequences exist, but the closing quote isn't escaped.
+		return s[:n], s[n+1:], true, nil
 	}
 
 	// Slow path - possible escaped " found.
@@ -527,16 +479,16 @@ func parseRawString(s string) (string, string, error) {
 			i--
 		}
 		if uint(n-i)%2 == 0 {
-			return ss[:len(ss)-len(s)+n], s[n+1:], nil
+			return ss[:len(ss)-len(s)+n], s[n+1:], true, nil
 		}
 		s = s[n+1:]
 
 		n = strings.IndexByte(s, '"')
 		if n < 0 {
-			return ss, "", fmt.Errorf(`missing closing '"'`)
+			return ss, "", true, fmt.Errorf(`missing closing '"'`)
 		}
 		if n == 0 || s[n-1] != '\\' {
-			return ss[:len(ss)-len(s)+n], s[n+1:], nil
+			return ss[:len(ss)-len(s)+n], s[n+1:], true, nil
 		}
 	}
 }
@@ -586,7 +538,7 @@ func (o *Object) MarshalTo(dst []byte) []byte {
 	dst = append(dst, '{')
 	for i, kv := range o.kvs {
 		if kv.keyUnescaped {
-			dst = escapeString(dst, kv.k)
+			dst = appendQuotedString(dst, kv.k, kv.keyNeedsEscape)
 		} else {
 			dst = append(dst, '"')
 			dst = append(dst, kv.k...)
@@ -624,7 +576,7 @@ func (o *Object) getKV(a arena.Arena) *kv {
 // unescapeKey unescapes a specific key.
 // Callers must check kv.keyUnescaped before calling.
 func (o *Object) unescapeKey(a arena.Arena, kv *kv) {
-	kv.k = unescapeStringBestEffort(a, kv.k)
+	kv.k, kv.keyNeedsEscape = unescapeStringBestEffortInfo(a, kv.k)
 	kv.keyUnescaped = true
 }
 
@@ -675,11 +627,13 @@ func (o *Object) Visit(f func(key []byte, v *Value)) {
 //
 // Cache-friendly layout: hot data first, compact structure
 type Value struct {
-	t Type     // HOT: accessed on every operation - 8 bytes
-	s string   // HOT: frequently accessed for strings/numbers - 16 bytes
-	a []*Value // HOT: frequently accessed for arrays - 24 bytes
-	o Object   // COLD: less frequently accessed - 25 bytes
-	// Total: 73 bytes - compact and cache-friendly
+	t                 Type // HOT: accessed on every operation
+	stringRaw         bool // TypeString only: s contains raw JSON string contents
+	stringHasEscapes  bool // TypeString+stringRaw only: raw string contains backslash escapes
+	stringNeedsEscape bool // TypeString+!stringRaw only: decoded string needs escaping on marshal
+	s                 string
+	a                 []*Value
+	o                 Object
 }
 
 // MarshalTo appends marshaled v to dst and returns the result.
@@ -698,7 +652,13 @@ func (v *Value) MarshalTo(dst []byte) []byte {
 		dst = append(dst, ']')
 		return dst
 	case TypeString:
-		return escapeString(dst, v.s)
+		if v.stringRaw {
+			dst = append(dst, '"')
+			dst = append(dst, v.s...)
+			dst = append(dst, '"')
+			return dst
+		}
+		return appendQuotedString(dst, v.s, v.stringNeedsEscape)
 	case TypeNumber:
 		return append(dst, v.s...)
 	case TypeTrue:
@@ -930,6 +890,7 @@ func (v *Value) GetStringBytes(keys ...string) []byte {
 	if v == nil || v.Type() != TypeString {
 		return nil
 	}
+	v.ensureDecodedString()
 	return s2b(v.s)
 }
 
@@ -979,7 +940,22 @@ func (v *Value) StringBytes() ([]byte, error) {
 	if v.Type() != TypeString {
 		return nil, fmt.Errorf("value doesn't contain string; it contains %s", v.Type())
 	}
+	v.ensureDecodedString()
 	return s2b(v.s), nil
+}
+
+func (v *Value) ensureDecodedString() {
+	if v == nil || v.t != TypeString || !v.stringRaw {
+		return
+	}
+	if !v.stringHasEscapes {
+		v.stringRaw = false
+		v.stringNeedsEscape = false
+		return
+	}
+	v.s, v.stringNeedsEscape = unescapeStringBestEffortInfo(nil, v.s)
+	v.stringRaw = false
+	v.stringHasEscapes = false
 }
 
 // Float64 returns the underlying JSON number for the v.

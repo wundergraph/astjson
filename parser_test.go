@@ -97,7 +97,7 @@ func testUnescapeStringBestEffort(t *testing.T, s, expectedS string) {
 	// unescapeString modifies the original s, so call it
 	// on a byte slice copy.
 	b := append([]byte{}, s...)
-	us := unescapeStringBestEffort(nil, b2s(b))
+	us, _ := unescapeStringBestEffortInfo(nil, b2s(b))
 	if us != expectedS {
 		t.Fatalf("unexpected unescaped string; got %q; want %q", us, expectedS)
 	}
@@ -108,7 +108,7 @@ func TestParseRawString(t *testing.T) {
 		f := func(s, expectedRS, expectedTail string) {
 			t.Helper()
 
-			rs, tail, err := parseRawString(s[1:])
+			rs, tail, _, err := parseRawStringInfo(s[1:])
 			if err != nil {
 				t.Fatalf("unexpected error on parseRawString: %s", err)
 			}
@@ -120,7 +120,7 @@ func TestParseRawString(t *testing.T) {
 			}
 
 			// parseRawKey results must be identical to parseRawString.
-			rs, tail, err = parseRawKey(s[1:])
+			rs, tail, _, err = parseRawKey(s[1:])
 			if err != nil {
 				t.Fatalf("unexpected error on parseRawKey: %s", err)
 			}
@@ -153,7 +153,7 @@ func TestParseRawString(t *testing.T) {
 		f := func(s, expectedTail string) {
 			t.Helper()
 
-			_, tail, err := parseRawString(s[1:])
+			_, tail, _, err := parseRawStringInfo(s[1:])
 			if err == nil {
 				t.Fatalf("expecting non-nil error on parseRawString")
 			}
@@ -162,7 +162,7 @@ func TestParseRawString(t *testing.T) {
 			}
 
 			// parseRawKey results must be identical to parseRawString.
-			_, tail, err = parseRawKey(s[1:])
+			_, tail, _, err = parseRawKey(s[1:])
 			if err == nil {
 				t.Fatalf("expecting non-nil error on parseRawKey")
 			}
@@ -1569,28 +1569,28 @@ func TestEscapeStringSlowPath(t *testing.T) {
 // TestUnescapeStringBestEffortEdgeCases tests edge cases in unescaping
 func TestUnescapeStringBestEffortEdgeCases(t *testing.T) {
 	t.Run("incomplete unicode escape", func(t *testing.T) {
-		result := unescapeStringBestEffort(nil, "\\u12")
+		result, _ := unescapeStringBestEffortInfo(nil, "\\u12")
 		if result != "\\u12" {
 			t.Errorf("unescapeStringBestEffort(\"\\u12\") = %q, want %q", result, "\\u12")
 		}
 	})
 
 	t.Run("invalid unicode escape", func(t *testing.T) {
-		result := unescapeStringBestEffort(nil, "\\u12xy")
+		result, _ := unescapeStringBestEffortInfo(nil, "\\u12xy")
 		if result != "\\u12xy" {
 			t.Errorf("unescapeStringBestEffort(\"\\u12xy\") = %q, want %q", result, "\\u12xy")
 		}
 	})
 
 	t.Run("incomplete surrogate pair", func(t *testing.T) {
-		result := unescapeStringBestEffort(nil, "\\ud83e")
+		result, _ := unescapeStringBestEffortInfo(nil, "\\ud83e")
 		if result != "\\ud83e" {
 			t.Errorf("unescapeStringBestEffort(\"\\ud83e\") = %q, want %q", result, "\\ud83e")
 		}
 	})
 
 	t.Run("invalid surrogate pair", func(t *testing.T) {
-		result := unescapeStringBestEffort(nil, "\\ud83e\\u1234")
+		result, _ := unescapeStringBestEffortInfo(nil, "\\ud83e\\u1234")
 		// The function actually processes this as a valid surrogate pair, so we need to check the actual behavior
 		if len(result) == 0 {
 			t.Errorf("unescapeStringBestEffort(\"\\ud83e\\u1234\") returned empty string")
@@ -1598,7 +1598,7 @@ func TestUnescapeStringBestEffortEdgeCases(t *testing.T) {
 	})
 
 	t.Run("unknown escape sequence", func(t *testing.T) {
-		result := unescapeStringBestEffort(nil, "\\x")
+		result, _ := unescapeStringBestEffortInfo(nil, "\\x")
 		if result != "\\x" {
 			t.Errorf("unescapeStringBestEffort(\"\\x\") = %q, want %q", result, "\\x")
 		}
@@ -1850,7 +1850,7 @@ func TestUnescapeStringBestEffortMore(t *testing.T) {
 		}
 
 		for _, tc := range testCases {
-			result := unescapeStringBestEffort(nil, tc.input)
+			result, _ := unescapeStringBestEffortInfo(nil, tc.input)
 			if result != tc.expected {
 				t.Errorf("unescapeStringBestEffort(%q) = %q, want %q", tc.input, result, tc.expected)
 			}
@@ -2051,21 +2051,21 @@ func TestUintEdgeCasesMore(t *testing.T) {
 // TestUnescapeStringBestEffortFinal tests final edge cases in unescaping
 func TestUnescapeStringBestEffortFinal(t *testing.T) {
 	t.Run("empty string", func(t *testing.T) {
-		result := unescapeStringBestEffort(nil, "")
+		result, _ := unescapeStringBestEffortInfo(nil, "")
 		if result != "" {
 			t.Errorf("unescapeStringBestEffort(\"\") = %q, want \"\"", result)
 		}
 	})
 
 	t.Run("string with no escapes", func(t *testing.T) {
-		result := unescapeStringBestEffort(nil, "hello world")
+		result, _ := unescapeStringBestEffortInfo(nil, "hello world")
 		if result != "hello world" {
 			t.Errorf("unescapeStringBestEffort(\"hello world\") = %q, want \"hello world\"", result)
 		}
 	})
 
 	t.Run("string with only escapes at end", func(t *testing.T) {
-		result := unescapeStringBestEffort(nil, "hello\\n")
+		result, _ := unescapeStringBestEffortInfo(nil, "hello\\n")
 		if result != "hello\n" {
 			t.Errorf("unescapeStringBestEffort(\"hello\\n\") = %q, want \"hello\\n\"", result)
 		}
@@ -2119,9 +2119,9 @@ func TestObjectMarshalToRawKey(t *testing.T) {
 	// In this case MarshalTo should emit the raw key wrapped in quotes without escaping.
 	o := &Object{}
 	entry := &kv{
-		k:             `already\"escaped`,
-		v:             valueNull,
-		keyUnescaped:  false,
+		k:            `already\"escaped`,
+		v:            valueNull,
+		keyUnescaped: false,
 	}
 	o.kvs = append(o.kvs, entry)
 
