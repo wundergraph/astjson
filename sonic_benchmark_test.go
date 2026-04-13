@@ -23,6 +23,13 @@ func TestSonicParserParity(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sonic parse failed: %v", err)
 			}
+			vSonicAST, err := ParseWithSonicAST([]byte(tc.json))
+			if err != nil {
+				t.Fatalf("sonic-ast parse failed: %v", err)
+			}
+			if vSonicAST.Type() != vSonic.Type() {
+				t.Fatalf("sonic-ast type mismatch: ast=%s sonic=%s", vSonicAST.Type(), vSonic.Type())
+			}
 			var p Parser
 			vNative, err := p.Parse(tc.json)
 			if err != nil {
@@ -81,7 +88,26 @@ func BenchmarkParseSonicVsNative(b *testing.B) {
 			b.Run("sonic-usenumber", func(b *testing.B) {
 				benchmarkSonicParseUseNumber(b, f.data)
 			})
+			b.Run("sonic-ast", func(b *testing.B) {
+				benchmarkSonicASTParse(b, f.data)
+			})
 		})
+	}
+}
+
+func benchmarkSonicASTParse(b *testing.B, s string) {
+	data := []byte(s)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(data)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v, err := ParseWithSonicAST(data)
+		if err != nil {
+			b.Fatalf("sonic-ast parse: %v", err)
+		}
+		if v.Type() == TypeNull {
+			b.Fatalf("unexpected null top-level")
+		}
 	}
 }
 
