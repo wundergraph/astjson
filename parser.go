@@ -1,7 +1,7 @@
 package astjson
 
 import (
-	"fmt"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -120,11 +120,11 @@ func (p *Parser) parse(a arena.Arena, s string) (*Value, error) {
 
 	v, tail, err := parseValue(a, s, 0)
 	if err != nil {
-		return nil, NewParseError(fmt.Errorf("cannot parse JSON: %s; unparsed tail: %q", err, startEndString(tail)))
+		return nil, NewParseError(errors.New("cannot parse JSON: " + err.Error() + "; unparsed tail: " + strconv.Quote(startEndString(tail))))
 	}
 	tail = skipWS(tail)
 	if len(tail) > 0 {
-		return nil, NewParseError(fmt.Errorf("unexpected tail: %q", startEndString(tail)))
+		return nil, NewParseError(errors.New("unexpected tail: " + strconv.Quote(startEndString(tail))))
 	}
 	return v, nil
 }
@@ -169,11 +169,11 @@ const MaxDepth = 300
 
 func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 	if len(s) == 0 {
-		return nil, s, fmt.Errorf("cannot parse empty string")
+		return nil, s, errParseEmpty
 	}
 	depth++
 	if depth > MaxDepth {
-		return nil, s, fmt.Errorf("too big depth for the nested JSON; it exceeds %d", MaxDepth)
+		return nil, s, errParseMaxDepth
 	}
 
 	// Branch prediction optimization: order by frequency
@@ -183,7 +183,7 @@ func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 		// String - most common in JSON
 		ss, tail, hasEscape, err := parseRawStringInfo(s[1:])
 		if err != nil {
-			return nil, tail, fmt.Errorf("cannot parse string: %s", err)
+			return nil, tail, errors.New("cannot parse string: " + err.Error())
 		}
 		v := arena.Allocate[Value](a)
 		v.t = TypeString
@@ -197,26 +197,26 @@ func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 		// Object - very common
 		v, tail, err := parseObject(a, s[1:], depth)
 		if err != nil {
-			return nil, tail, fmt.Errorf("cannot parse object: %s", err)
+			return nil, tail, errors.New("cannot parse object: " + err.Error())
 		}
 		return v, tail, nil
 	case '[':
 		// Array - common
 		v, tail, err := parseArray(a, s[1:], depth)
 		if err != nil {
-			return nil, tail, fmt.Errorf("cannot parse array: %s", err)
+			return nil, tail, errors.New("cannot parse array: " + err.Error())
 		}
 		return v, tail, nil
 	case 't':
 		// true literal - less common
 		if len(s) < len("true") || s[:len("true")] != "true" {
-			return nil, s, fmt.Errorf("unexpected value found: %q", s)
+			return nil, s, errors.New("unexpected value found: " + strconv.Quote(s))
 		}
 		return valueTrue, s[len("true"):], nil
 	case 'f':
 		// false literal - less common
 		if len(s) < len("false") || s[:len("false")] != "false" {
-			return nil, s, fmt.Errorf("unexpected value found: %q", s)
+			return nil, s, errors.New("unexpected value found: " + strconv.Quote(s))
 		}
 		return valueFalse, s[len("false"):], nil
 	case 'n':
@@ -229,14 +229,14 @@ func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 				v.s = s[:3]
 				return v, s[3:], nil
 			}
-			return nil, s, fmt.Errorf("unexpected value found: %q", s)
+			return nil, s, errors.New("unexpected value found: " + strconv.Quote(s))
 		}
 		return valueNull, s[len("null"):], nil
 	default:
 		// Number - very common, but handled last due to complex parsing
 		ns, tail, err := parseRawNumber(s)
 		if err != nil {
-			return nil, tail, fmt.Errorf("cannot parse number: %s", err)
+			return nil, tail, errors.New("cannot parse number: " + err.Error())
 		}
 		v := arena.Allocate[Value](a)
 		v.t = TypeNumber
@@ -248,7 +248,7 @@ func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 func parseArray(a arena.Arena, s string, depth int) (*Value, string, error) {
 	s = skipWS(s)
 	if len(s) == 0 {
-		return nil, s, fmt.Errorf("missing ']'")
+		return nil, s, errParseMissingCloseBracket
 	}
 
 	if s[0] == ']' {
@@ -268,7 +268,7 @@ func parseArray(a arena.Arena, s string, depth int) (*Value, string, error) {
 		s = skipWS(s)
 		v, s, err = parseValue(a, s, depth)
 		if err != nil {
-			return nil, s, fmt.Errorf("cannot parse array value: %s", err)
+			return nil, s, errors.New("cannot parse array value: " + err.Error())
 		}
 		if arr.a == nil {
 			arr.a = arena.AllocateSlice[*Value](a, 1, 1)
@@ -279,7 +279,7 @@ func parseArray(a arena.Arena, s string, depth int) (*Value, string, error) {
 
 		s = skipWS(s)
 		if len(s) == 0 {
-			return nil, s, fmt.Errorf("unexpected end of array")
+			return nil, s, errParseUnexpectedEndArray
 		}
 		if s[0] == ',' {
 			s = s[1:]
@@ -289,14 +289,14 @@ func parseArray(a arena.Arena, s string, depth int) (*Value, string, error) {
 			s = s[1:]
 			return arr, s, nil
 		}
-		return nil, s, fmt.Errorf("missing ',' after array value")
+		return nil, s, errParseMissingCommaArray
 	}
 }
 
 func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 	s = skipWS(s)
 	if len(s) == 0 {
-		return nil, s, fmt.Errorf("missing '}'")
+		return nil, s, errParseMissingCloseBrace
 	}
 
 	if s[0] == '}' {
@@ -316,12 +316,12 @@ func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 		// Parse key.
 		s = skipWS(s)
 		if len(s) == 0 || s[0] != '"' {
-			return nil, s, fmt.Errorf(`cannot find opening '"" for object key`)
+			return nil, s, errParseMissingOpenQuote
 		}
 		var keyHasEscape bool
 		kv.k, s, keyHasEscape, err = parseRawKey(s[1:])
 		if err != nil {
-			return nil, s, fmt.Errorf("cannot parse object key: %s", err)
+			return nil, s, errors.New("cannot parse object key: " + err.Error())
 		}
 		if keyHasEscape {
 			kv.k, kv.keyNeedsEscape = unescapeStringBestEffortInfo(a, kv.k)
@@ -329,7 +329,7 @@ func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 		kv.keyUnescaped = true
 		s = skipWS(s)
 		if len(s) == 0 || s[0] != ':' {
-			return nil, s, fmt.Errorf("missing ':' after object key")
+			return nil, s, errParseMissingColon
 		}
 		s = s[1:]
 
@@ -337,11 +337,11 @@ func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 		s = skipWS(s)
 		kv.v, s, err = parseValue(a, s, depth)
 		if err != nil {
-			return nil, s, fmt.Errorf("cannot parse object value: %s", err)
+			return nil, s, errors.New("cannot parse object value: " + err.Error())
 		}
 		s = skipWS(s)
 		if len(s) == 0 {
-			return nil, s, fmt.Errorf("unexpected end of object")
+			return nil, s, errParseUnexpectedEndObject
 		}
 		if s[0] == ',' {
 			s = s[1:]
@@ -350,7 +350,7 @@ func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 		if s[0] == '}' {
 			return o, s[1:], nil
 		}
-		return nil, s, fmt.Errorf("missing ',' after object value")
+		return nil, s, errParseMissingCommaObject
 	}
 }
 
@@ -445,7 +445,7 @@ func parseRawKey(s string) (string, string, bool, error) {
 			return parseRawStringInfo(s)
 		}
 	}
-	return s, "", false, fmt.Errorf(`missing closing '"'`)
+	return s, "", false, errParseMissingCloseQuote
 }
 
 // parseRawStringInfo scans the JSON string payload starting immediately after
@@ -460,7 +460,7 @@ func parseRawKey(s string) (string, string, bool, error) {
 func parseRawStringInfo(s string) (string, string, bool, error) {
 	n := strings.IndexByte(s, '"')
 	if n < 0 {
-		return s, "", false, fmt.Errorf(`missing closing '"'`)
+		return s, "", false, errParseMissingCloseQuote
 	}
 	if strings.IndexByte(s[:n], '\\') < 0 {
 		// Fast path. No escape sequences before the closing quote.
@@ -485,7 +485,7 @@ func parseRawStringInfo(s string) (string, string, bool, error) {
 
 		n = strings.IndexByte(s, '"')
 		if n < 0 {
-			return ss, "", true, fmt.Errorf(`missing closing '"'`)
+			return ss, "", true, errParseMissingCloseQuote
 		}
 		if n == 0 || s[n-1] != '\\' {
 			return ss[:len(ss)-len(s)+n], s[n+1:], true, nil
@@ -509,7 +509,7 @@ func parseRawNumber(s string) (string, string, error) {
 					return s[:i+3], s[i+3:], nil
 				}
 			}
-			return "", s, fmt.Errorf("unexpected char: %q", s[:1])
+			return "", s, errors.New("unexpected char: " + strconv.Quote(s[:1]))
 		}
 		ns := s[:i]
 		s = s[i:]
@@ -660,7 +660,7 @@ func (v *Value) MarshalTo(dst []byte) []byte {
 	case TypeNull:
 		return append(dst, "null"...)
 	default:
-		panic(fmt.Errorf("BUG: unexpected Value type: %d", v.t))
+		panic("BUG: unexpected Value type: " + strconv.Itoa(int(v.t)))
 	}
 }
 
@@ -725,7 +725,7 @@ func (t Type) String() string {
 	// typeRawString is skipped intentionally,
 	// since it shouldn't be visible to user.
 	default:
-		panic(fmt.Errorf("BUG: unknown Value type: %d", t))
+		panic("BUG: unknown Value type: " + strconv.Itoa(int(t)))
 	}
 }
 
@@ -905,7 +905,7 @@ func (v *Value) GetBool(keys ...string) bool {
 // Use GetObject if you don't need error handling.
 func (v *Value) Object() (*Object, error) {
 	if v.t != TypeObject {
-		return nil, fmt.Errorf("value doesn't contain object; it contains %s", v.Type())
+		return nil, errors.New("value doesn't contain object; it contains " + v.Type().String())
 	}
 	return &v.o, nil
 }
@@ -917,7 +917,7 @@ func (v *Value) Object() (*Object, error) {
 // Use GetArray if you don't need error handling.
 func (v *Value) Array() ([]*Value, error) {
 	if v.t != TypeArray {
-		return nil, fmt.Errorf("value doesn't contain array; it contains %s", v.Type())
+		return nil, errors.New("value doesn't contain array; it contains " + v.Type().String())
 	}
 	return v.a, nil
 }
@@ -929,7 +929,7 @@ func (v *Value) Array() ([]*Value, error) {
 // Use GetStringBytes if you don't need error handling.
 func (v *Value) StringBytes() ([]byte, error) {
 	if v.Type() != TypeString {
-		return nil, fmt.Errorf("value doesn't contain string; it contains %s", v.Type())
+		return nil, errors.New("value doesn't contain string; it contains " + v.Type().String())
 	}
 	return s2b(v.s), nil
 }
@@ -939,7 +939,7 @@ func (v *Value) StringBytes() ([]byte, error) {
 // Use GetFloat64 if you don't need error handling.
 func (v *Value) Float64() (float64, error) {
 	if v.Type() != TypeNumber {
-		return 0, fmt.Errorf("value doesn't contain number; it contains %s", v.Type())
+		return 0, errors.New("value doesn't contain number; it contains " + v.Type().String())
 	}
 	return fastfloat.Parse(v.s)
 }
@@ -949,7 +949,7 @@ func (v *Value) Float64() (float64, error) {
 // Use GetInt if you don't need error handling.
 func (v *Value) Int() (int, error) {
 	if v.Type() != TypeNumber {
-		return 0, fmt.Errorf("value doesn't contain number; it contains %s", v.Type())
+		return 0, errors.New("value doesn't contain number; it contains " + v.Type().String())
 	}
 	n, err := fastfloat.ParseInt64(v.s)
 	if err != nil {
@@ -963,7 +963,7 @@ func (v *Value) Int() (int, error) {
 // Use GetInt if you don't need error handling.
 func (v *Value) Uint() (uint, error) {
 	if v.Type() != TypeNumber {
-		return 0, fmt.Errorf("value doesn't contain number; it contains %s", v.Type())
+		return 0, errors.New("value doesn't contain number; it contains " + v.Type().String())
 	}
 	n, err := fastfloat.ParseUint64(v.s)
 	if err != nil {
@@ -977,7 +977,7 @@ func (v *Value) Uint() (uint, error) {
 // Use GetInt64 if you don't need error handling.
 func (v *Value) Int64() (int64, error) {
 	if v.Type() != TypeNumber {
-		return 0, fmt.Errorf("value doesn't contain number; it contains %s", v.Type())
+		return 0, errors.New("value doesn't contain number; it contains " + v.Type().String())
 	}
 	return fastfloat.ParseInt64(v.s)
 }
@@ -987,7 +987,7 @@ func (v *Value) Int64() (int64, error) {
 // Use GetInt64 if you don't need error handling.
 func (v *Value) Uint64() (uint64, error) {
 	if v.Type() != TypeNumber {
-		return 0, fmt.Errorf("value doesn't contain number; it contains %s", v.Type())
+		return 0, errors.New("value doesn't contain number; it contains " + v.Type().String())
 	}
 	return fastfloat.ParseUint64(v.s)
 }
@@ -1002,7 +1002,7 @@ func (v *Value) Bool() (bool, error) {
 	if v.t == TypeFalse {
 		return false, nil
 	}
-	return false, fmt.Errorf("value doesn't contain bool; it contains %s", v.Type())
+	return false, errors.New("value doesn't contain bool; it contains " + v.Type().String())
 }
 
 var (

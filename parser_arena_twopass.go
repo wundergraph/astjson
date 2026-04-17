@@ -1,7 +1,9 @@
 package astjson
 
 import (
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
@@ -75,7 +77,7 @@ func planArenaParseWithScratch(s string, scratch *arenaPlanScratch) (arenaParseP
 	}
 	tail = skipWS(tail)
 	if len(tail) > 0 {
-		return arenaParsePlan{}, fmt.Errorf("unexpected tail: %q", startEndString(tail))
+		return arenaParsePlan{}, errors.New("unexpected tail: " + strconv.Quote(startEndString(tail)))
 	}
 	return planner.finish(scratch), nil
 }
@@ -103,11 +105,11 @@ func (p *arenaPlanner) finish(scratch *arenaPlanScratch) arenaParsePlan {
 
 func (p *arenaPlanner) planValue(s string, depth int) (string, error) {
 	if len(s) == 0 {
-		return s, fmt.Errorf("cannot parse empty string")
+		return s, errParseEmpty
 	}
 	depth++
 	if depth > MaxDepth {
-		return s, fmt.Errorf("too big depth for the nested JSON; it exceeds %d", MaxDepth)
+		return s, errParseMaxDepth
 	}
 
 	switch s[0] {
@@ -115,7 +117,7 @@ func (p *arenaPlanner) planValue(s string, depth int) (string, error) {
 		p.plan.values++
 		raw, tail, hasEscape, err := parseRawStringInfo(s[1:])
 		if err != nil {
-			return tail, fmt.Errorf("cannot parse string: %s", err)
+			return tail, errors.New("cannot parse string: " + err.Error())
 		}
 		p.plan.stringSpans = append(p.plan.stringSpans, arenaStringSpan{
 			rawLen:    len(raw),
@@ -130,12 +132,12 @@ func (p *arenaPlanner) planValue(s string, depth int) (string, error) {
 		return p.planArray(s[1:], depth)
 	case 't':
 		if len(s) < len("true") || s[:len("true")] != "true" {
-			return s, fmt.Errorf("unexpected value found: %q", s)
+			return s, errors.New("unexpected value found: " + strconv.Quote(s))
 		}
 		return s[len("true"):], nil
 	case 'f':
 		if len(s) < len("false") || s[:len("false")] != "false" {
-			return s, fmt.Errorf("unexpected value found: %q", s)
+			return s, errors.New("unexpected value found: " + strconv.Quote(s))
 		}
 		return s[len("false"):], nil
 	case 'n':
@@ -144,14 +146,14 @@ func (p *arenaPlanner) planValue(s string, depth int) (string, error) {
 				p.plan.values++
 				return s[3:], nil
 			}
-			return s, fmt.Errorf("unexpected value found: %q", s)
+			return s, errors.New("unexpected value found: " + strconv.Quote(s))
 		}
 		return s[len("null"):], nil
 	default:
 		p.plan.values++
 		_, tail, err := parseRawNumber(s)
 		if err != nil {
-			return tail, fmt.Errorf("cannot parse number: %s", err)
+			return tail, errors.New("cannot parse number: " + err.Error())
 		}
 		return tail, nil
 	}
@@ -160,7 +162,7 @@ func (p *arenaPlanner) planValue(s string, depth int) (string, error) {
 func (p *arenaPlanner) planArray(s string, depth int) (string, error) {
 	s = skipWS(s)
 	if len(s) == 0 {
-		return "", fmt.Errorf("missing ']'")
+		return "", errParseMissingCloseBracket
 	}
 
 	idx := len(p.plan.arraySizes)
@@ -175,14 +177,14 @@ func (p *arenaPlanner) planArray(s string, depth int) (string, error) {
 		s = skipWS(s)
 		s, err = p.planValue(s, depth)
 		if err != nil {
-			return s, fmt.Errorf("cannot parse array value: %s", err)
+			return s, errors.New("cannot parse array value: " + err.Error())
 		}
 		p.plan.arrayElems++
 		count++
 
 		s = skipWS(s)
 		if len(s) == 0 {
-			return s, fmt.Errorf("unexpected end of array")
+			return s, errParseUnexpectedEndArray
 		}
 		if s[0] == ',' {
 			s = s[1:]
@@ -192,14 +194,14 @@ func (p *arenaPlanner) planArray(s string, depth int) (string, error) {
 			p.plan.arraySizes[idx] = count
 			return s[1:], nil
 		}
-		return s, fmt.Errorf("missing ',' after array value")
+		return s, errParseMissingCommaArray
 	}
 }
 
 func (p *arenaPlanner) planObject(s string, depth int) (string, error) {
 	s = skipWS(s)
 	if len(s) == 0 {
-		return "", fmt.Errorf("missing '}'")
+		return "", errParseMissingCloseBrace
 	}
 
 	idx := len(p.plan.objectSizes)
@@ -213,11 +215,11 @@ func (p *arenaPlanner) planObject(s string, depth int) (string, error) {
 		var err error
 		s = skipWS(s)
 		if len(s) == 0 || s[0] != '"' {
-			return s, fmt.Errorf(`cannot find opening '"" for object key`)
+			return s, errParseMissingOpenQuote
 		}
 		rawKey, tail, hasEscape, err := parseRawKey(s[1:])
 		if err != nil {
-			return tail, fmt.Errorf("cannot parse object key: %s", err)
+			return tail, errors.New("cannot parse object key: " + err.Error())
 		}
 		p.plan.keySpans = append(p.plan.keySpans, arenaStringSpan{
 			rawLen:    len(rawKey),
@@ -228,20 +230,20 @@ func (p *arenaPlanner) planObject(s string, depth int) (string, error) {
 		}
 		s = skipWS(tail)
 		if len(s) == 0 || s[0] != ':' {
-			return s, fmt.Errorf("missing ':' after object key")
+			return s, errParseMissingColon
 		}
 		s = s[1:]
 		s = skipWS(s)
 		s, err = p.planValue(s, depth)
 		if err != nil {
-			return s, fmt.Errorf("cannot parse object value: %s", err)
+			return s, errors.New("cannot parse object value: " + err.Error())
 		}
 		p.plan.kvs++
 		count++
 
 		s = skipWS(s)
 		if len(s) == 0 {
-			return s, fmt.Errorf("unexpected end of object")
+			return s, errParseUnexpectedEndObject
 		}
 		if s[0] == ',' {
 			s = s[1:]
@@ -251,7 +253,7 @@ func (p *arenaPlanner) planObject(s string, depth int) (string, error) {
 			p.plan.objectSizes[idx] = count
 			return s[1:], nil
 		}
-		return s, fmt.Errorf("missing ',' after object value")
+		return s, errParseMissingCommaObject
 	}
 }
 
@@ -261,7 +263,7 @@ func parseArenaTwoPass(p *Parser, a arena.Arena, s string) (*Value, error) {
 	planner := newArenaPlanner(scratch)
 	tail, err := planner.planValue(s, 0)
 	if err != nil {
-		return nil, NewParseError(fmt.Errorf("cannot parse JSON: %s; unparsed tail: %q", err, startEndString(tail)))
+		return nil, NewParseError(errors.New("cannot parse JSON: " + err.Error() + "; unparsed tail: " + strconv.Quote(startEndString(tail))))
 	}
 	plan := planner.finish(scratch)
 	if scratch != nil {
@@ -274,17 +276,17 @@ func parseArenaTwoPass(p *Parser, a arena.Arena, s string) (*Value, error) {
 	}
 	tail = skipWS(tail)
 	if len(tail) > 0 {
-		return nil, NewParseError(fmt.Errorf("unexpected tail: %q", startEndString(tail)))
+		return nil, NewParseError(errors.New("unexpected tail: " + strconv.Quote(startEndString(tail))))
 	}
 
 	filler := newArenaFillState(a, plan)
 	v, tail, err := filler.parseValue(s, 0)
 	if err != nil {
-		return nil, NewParseError(fmt.Errorf("cannot parse JSON: %s; unparsed tail: %q", err, startEndString(tail)))
+		return nil, NewParseError(errors.New("cannot parse JSON: " + err.Error() + "; unparsed tail: " + strconv.Quote(startEndString(tail))))
 	}
 	tail = skipWS(tail)
 	if len(tail) > 0 {
-		return nil, NewParseError(fmt.Errorf("unexpected tail: %q", startEndString(tail)))
+		return nil, NewParseError(errors.New("unexpected tail: " + strconv.Quote(startEndString(tail))))
 	}
 	if err := filler.finish(); err != nil {
 		return nil, NewParseError(err)
@@ -389,21 +391,23 @@ func (f *arenaFillState) nextStringSpan() arenaStringSpan {
 	return span
 }
 
+var errBugPlannedStringSpan = errors.New("BUG: planned string span mismatch")
+
 func consumePlannedString(s string, span arenaStringSpan) (string, string, error) {
 	end := 1 + span.rawLen
 	if len(s) <= end || s[0] != '"' || s[end] != '"' {
-		return "", s, fmt.Errorf("BUG: planned string span mismatch")
+		return "", s, errBugPlannedStringSpan
 	}
 	return s[1:end], s[end+1:], nil
 }
 
 func (f *arenaFillState) parseValue(s string, depth int) (*Value, string, error) {
 	if len(s) == 0 {
-		return nil, s, fmt.Errorf("cannot parse empty string")
+		return nil, s, errParseEmpty
 	}
 	depth++
 	if depth > MaxDepth {
-		return nil, s, fmt.Errorf("too big depth for the nested JSON; it exceeds %d", MaxDepth)
+		return nil, s, errParseMaxDepth
 	}
 
 	switch s[0] {
@@ -411,7 +415,7 @@ func (f *arenaFillState) parseValue(s string, depth int) (*Value, string, error)
 		span := f.nextStringSpan()
 		raw, tail, err := consumePlannedString(s, span)
 		if err != nil {
-			return nil, tail, fmt.Errorf("cannot parse string: %s", err)
+			return nil, tail, errors.New("cannot parse string: " + err.Error())
 		}
 		v := f.allocValue()
 		v.t = TypeString
@@ -429,12 +433,12 @@ func (f *arenaFillState) parseValue(s string, depth int) (*Value, string, error)
 		return f.parseArray(s[1:], depth)
 	case 't':
 		if len(s) < len("true") || s[:len("true")] != "true" {
-			return nil, s, fmt.Errorf("unexpected value found: %q", s)
+			return nil, s, errors.New("unexpected value found: " + strconv.Quote(s))
 		}
 		return valueTrue, s[len("true"):], nil
 	case 'f':
 		if len(s) < len("false") || s[:len("false")] != "false" {
-			return nil, s, fmt.Errorf("unexpected value found: %q", s)
+			return nil, s, errors.New("unexpected value found: " + strconv.Quote(s))
 		}
 		return valueFalse, s[len("false"):], nil
 	case 'n':
@@ -447,13 +451,13 @@ func (f *arenaFillState) parseValue(s string, depth int) (*Value, string, error)
 				v.o.reset()
 				return v, s[3:], nil
 			}
-			return nil, s, fmt.Errorf("unexpected value found: %q", s)
+			return nil, s, errors.New("unexpected value found: " + strconv.Quote(s))
 		}
 		return valueNull, s[len("null"):], nil
 	default:
 		ns, tail, err := parseRawNumber(s)
 		if err != nil {
-			return nil, tail, fmt.Errorf("cannot parse number: %s", err)
+			return nil, tail, errors.New("cannot parse number: " + err.Error())
 		}
 		v := f.allocValue()
 		v.t = TypeNumber
@@ -464,10 +468,15 @@ func (f *arenaFillState) parseValue(s string, depth int) (*Value, string, error)
 	}
 }
 
+var (
+	errBugUnreachableArrayParse  = errors.New("BUG: unreachable array parse")
+	errBugUnreachableObjectParse = errors.New("BUG: unreachable object parse")
+)
+
 func (f *arenaFillState) parseArray(s string, depth int) (*Value, string, error) {
 	s = skipWS(s)
 	if len(s) == 0 {
-		return nil, s, fmt.Errorf("missing ']'")
+		return nil, s, errParseMissingCloseBracket
 	}
 
 	v := f.allocValue()
@@ -486,30 +495,30 @@ func (f *arenaFillState) parseArray(s string, depth int) (*Value, string, error)
 		s = skipWS(s)
 		v.a[i], s, err = f.parseValue(s, depth)
 		if err != nil {
-			return nil, s, fmt.Errorf("cannot parse array value: %s", err)
+			return nil, s, errors.New("cannot parse array value: " + err.Error())
 		}
 		s = skipWS(s)
 		if i == count-1 {
 			if len(s) == 0 || s[0] != ']' {
-				return nil, s, fmt.Errorf("missing ',' after array value")
+				return nil, s, errParseMissingCommaArray
 			}
 			return v, s[1:], nil
 		}
 		if len(s) == 0 {
-			return nil, s, fmt.Errorf("unexpected end of array")
+			return nil, s, errParseUnexpectedEndArray
 		}
 		if s[0] != ',' {
-			return nil, s, fmt.Errorf("missing ',' after array value")
+			return nil, s, errParseMissingCommaArray
 		}
 		s = s[1:]
 	}
-	return nil, s, fmt.Errorf("BUG: unreachable array parse")
+	return nil, s, errBugUnreachableArrayParse
 }
 
 func (f *arenaFillState) parseObject(s string, depth int) (*Value, string, error) {
 	s = skipWS(s)
 	if len(s) == 0 {
-		return nil, s, fmt.Errorf("missing '}'")
+		return nil, s, errParseMissingCloseBrace
 	}
 
 	v := f.allocValue()
@@ -530,43 +539,43 @@ func (f *arenaFillState) parseObject(s string, depth int) (*Value, string, error
 
 		s = skipWS(s)
 		if len(s) == 0 || s[0] != '"' {
-			return nil, s, fmt.Errorf(`cannot find opening '"" for object key`)
+			return nil, s, errParseMissingOpenQuote
 		}
 		keySpan := f.nextKeySpan()
 		entry.k, s, err = consumePlannedString(s, keySpan)
 		if err != nil {
-			return nil, s, fmt.Errorf("cannot parse object key: %s", err)
+			return nil, s, errors.New("cannot parse object key: " + err.Error())
 		}
 		entry.k, entry.keyNeedsEscape = f.storeString(entry.k, keySpan.hasEscape)
 		entry.keyUnescaped = true
 
 		s = skipWS(s)
 		if len(s) == 0 || s[0] != ':' {
-			return nil, s, fmt.Errorf("missing ':' after object key")
+			return nil, s, errParseMissingColon
 		}
 		s = s[1:]
 
 		s = skipWS(s)
 		entry.v, s, err = f.parseValue(s, depth)
 		if err != nil {
-			return nil, s, fmt.Errorf("cannot parse object value: %s", err)
+			return nil, s, errors.New("cannot parse object value: " + err.Error())
 		}
 		s = skipWS(s)
 		if i == count-1 {
 			if len(s) == 0 || s[0] != '}' {
-				return nil, s, fmt.Errorf("missing ',' after object value")
+				return nil, s, errParseMissingCommaObject
 			}
 			return v, s[1:], nil
 		}
 		if len(s) == 0 {
-			return nil, s, fmt.Errorf("unexpected end of object")
+			return nil, s, errParseUnexpectedEndObject
 		}
 		if s[0] != ',' {
-			return nil, s, fmt.Errorf("missing ',' after object value")
+			return nil, s, errParseMissingCommaObject
 		}
 		s = s[1:]
 	}
-	return nil, s, fmt.Errorf("BUG: unreachable object parse")
+	return nil, s, errBugUnreachableObjectParse
 }
 
 func (f *arenaFillState) storeString(raw string, hasEscape bool) (string, bool) {
@@ -700,6 +709,8 @@ func decodeStringBestEffort(dst []byte, s string) (int, bool) {
 	return out, needsEscape
 }
 
+var errInvalidHex = errors.New("invalid hex")
+
 func parseUint16Hex(s string) (uint16, error) {
 	var n uint16
 	for i := 0; i < len(s); i++ {
@@ -712,7 +723,7 @@ func parseUint16Hex(s string) (uint16, error) {
 		case ch >= 'A' && ch <= 'F':
 			n |= uint16(ch-'A') + 10
 		default:
-			return 0, fmt.Errorf("invalid hex")
+			return 0, errInvalidHex
 		}
 	}
 	return n, nil
