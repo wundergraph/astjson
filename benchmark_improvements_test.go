@@ -24,7 +24,6 @@ var (
 	sinkString        string
 	sinkBytes         []byte
 	sinkBool          bool
-	sinkErr           error
 	sinkValue         *Value
 )
 
