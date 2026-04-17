@@ -657,8 +657,8 @@ func decodeStringBestEffort(dst []byte, s string) (int, bool) {
 				break
 			}
 			xs := s[:4]
-			x, err := parseUint16Hex(xs)
-			if err != nil {
+			x, ok := parseHex4(xs)
+			if !ok {
 				write('\\', 'u')
 				needsEscape = true
 				break
@@ -679,8 +679,8 @@ func decodeStringBestEffort(dst []byte, s string) (int, bool) {
 				needsEscape = true
 				break
 			}
-			x1, err := parseUint16Hex(s[2:6])
-			if err != nil {
+			x1, ok := parseHex4(s[2:6])
+			if !ok {
 				write('\\', 'u')
 				writeString(xs)
 				needsEscape = true
@@ -709,22 +709,3 @@ func decodeStringBestEffort(dst []byte, s string) (int, bool) {
 	return out, needsEscape
 }
 
-var errInvalidHex = errors.New("invalid hex")
-
-func parseUint16Hex(s string) (uint16, error) {
-	var n uint16
-	for i := 0; i < len(s); i++ {
-		n <<= 4
-		switch ch := s[i]; {
-		case ch >= '0' && ch <= '9':
-			n |= uint16(ch - '0')
-		case ch >= 'a' && ch <= 'f':
-			n |= uint16(ch-'a') + 10
-		case ch >= 'A' && ch <= 'F':
-			n |= uint16(ch-'A') + 10
-		default:
-			return 0, errInvalidHex
-		}
-	}
-	return n, nil
-}
