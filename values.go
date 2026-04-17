@@ -115,6 +115,54 @@ func ObjectValue(a arena.Arena) *Value {
 	return v
 }
 
+// CoerceToString returns a JSON string Value representing v.
+//
+// v is never mutated. For TypeString, v is returned unchanged. For
+// every other type, a new Value is allocated on a (heap when a is nil).
+// This is safe when v may be aliased — notably, [Parser.StructuralCopy]
+// aliases scalars from source to copy, so mutating the copy in place
+// would corrupt the source.
+//
+// Contents of the returned string:
+//   - number: the original digits (e.g. -1.5e10 → "-1.5e10")
+//   - true/false/null: the JSON literal
+//   - object/array: the marshaled JSON text (e.g. {"a":1} → "{\"a\":1}")
+//
+// For numbers and literals, the backing bytes are aliased from v or from
+// package-level constants, so no byte-level copy occurs. For objects and
+// arrays, the marshaled text is copied onto a.
+func (v *Value) CoerceToString(a arena.Arena) *Value {
+	switch v.t {
+	case TypeString:
+		return v
+	case TypeNumber:
+		return newStringValue(a, v.s)
+	case TypeTrue:
+		return newStringValue(a, "true")
+	case TypeFalse:
+		return newStringValue(a, "false")
+	case TypeNull:
+		return newStringValue(a, "null")
+	case TypeObject, TypeArray:
+		b := v.MarshalTo(nil)
+		nv := arena.Allocate[Value](a)
+		nv.t = TypeString
+		nv.s = arenaString(a, b2s(b))
+		nv.stringNeedsEscape = hasSpecialChars(nv.s)
+		return nv
+	default:
+		return v
+	}
+}
+
+func newStringValue(a arena.Arena, s string) *Value {
+	nv := arena.Allocate[Value](a)
+	nv.t = TypeString
+	nv.s = s
+	nv.stringNeedsEscape = false
+	return nv
+}
+
 // ArrayValue creates an empty JSON array Value.
 //
 // Use [Value.SetArrayItem] or [AppendToArray] to add elements. The array's

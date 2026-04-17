@@ -116,13 +116,9 @@ func TestStringValueBytesNilArena(t *testing.T) {
 
 func TestStringValueTracksMarshalEscapeFlags(t *testing.T) {
 	plain := StringValue(nil, "plain")
-	require.False(t, plain.stringRaw)
-	require.False(t, plain.stringHasEscapes)
 	require.False(t, plain.stringNeedsEscape)
 
 	escaped := StringValue(nil, "he said \"hi\"\n")
-	require.False(t, escaped.stringRaw)
-	require.False(t, escaped.stringHasEscapes)
 	require.True(t, escaped.stringNeedsEscape)
 }
 
@@ -249,4 +245,210 @@ func TestStructuralCopyNilValue(t *testing.T) {
 	a := arena.NewMonotonicArena()
 	var parser Parser
 	require.Nil(t, parser.StructuralCopy(a, nil))
+}
+
+// TestDeepCopy_BatchEntityPattern replicates the GraphQL batch entity cache
+// pattern: parse multiple entities on the same arena using the same parser,
+// DeepCopy each one, and place them into an array at specific indices.
+// This is the exact pattern used by the GraphQL resolver's mergeBatchCacheHit.
+func TestDeepCopy_BatchEntityPattern(t *testing.T) {
+	a := arena.NewMonotonicArena(arena.WithMinBufferSize(4096))
+	var p Parser
+
+	// Parse two different entities (simulating L2 cache results parsed onto the same arena)
+	entity0, err := p.ParseBytesWithArena(a, []byte(`{"id":"r1","body":"A highly effective form of birth control.","author":{"id":"1"}}`))
+	require.NoError(t, err)
+	entity1, err := p.ParseBytesWithArena(a, []byte(`{"id":"r2","body":"Fedoras are one of the most fashionable hats around.","author":{"id":"2"}}`))
+	require.NoError(t, err)
+
+	// Build a response array (simulating entityArray in mergeBatchCacheHit)
+	entityArray := ArrayValue(a)
+	entityArray.SetArrayItem(a, 0, NullValue)
+	entityArray.SetArrayItem(a, 1, NullValue)
+
+	// DeepCopy each entity and place at its batch index (same pattern as loader)
+	entityArray.SetArrayItem(a, 0, p.DeepCopy(a, entity0))
+	entityArray.SetArrayItem(a, 1, p.DeepCopy(a, entity1))
+
+	// Verify: each array element must have its own distinct body
+	items := entityArray.GetArray()
+	require.Len(t, items, 2)
+
+	body0 := string(items[0].Get("body").GetStringBytes())
+	body1 := string(items[1].Get("body").GetStringBytes())
+
+	require.Equal(t, "A highly effective form of birth control.", body0,
+		"entity 0 body must be the Trilby review, not Fedora's")
+	require.Equal(t, "Fedoras are one of the most fashionable hats around.", body1,
+		"entity 1 body must be the Fedora review")
+
+	// Also verify nested objects are independent
+	author0 := string(items[0].Get("author").Get("id").GetStringBytes())
+	author1 := string(items[1].Get("author").Get("id").GetStringBytes())
+	require.Equal(t, "1", author0)
+	require.Equal(t, "2", author1)
+}
+
+// TestDeepCopy_BatchEntityPatternWithMerge extends the batch pattern to include
+// MergeValues after placing cached entities, simulating the full merge flow.
+func TestDeepCopy_BatchEntityPatternWithMerge(t *testing.T) {
+	a := arena.NewMonotonicArena(arena.WithMinBufferSize(4096))
+	var p Parser
+
+	// Simulate existing items in the response tree (product data already merged)
+	item0, err := p.ParseBytesWithArena(a, []byte(`{"name":"Trilby"}`))
+	require.NoError(t, err)
+	item1, err := p.ParseBytesWithArena(a, []byte(`{"name":"Fedora"}`))
+	require.NoError(t, err)
+
+	// Parse cached review entities
+	review0, err := p.ParseBytesWithArena(a, []byte(`{"body":"A highly effective form of birth control."}`))
+	require.NoError(t, err)
+	review1, err := p.ParseBytesWithArena(a, []byte(`{"body":"Fedoras are one of the most fashionable hats around."}`))
+	require.NoError(t, err)
+
+	// DeepCopy and merge each review into its item (simulating MergeValues in mergeResult)
+	_, _, err = MergeValues(a, item0, p.DeepCopy(a, review0))
+	require.NoError(t, err)
+	_, _, err = MergeValues(a, item1, p.DeepCopy(a, review1))
+	require.NoError(t, err)
+
+	// Verify each item has the correct body
+	require.Equal(t, "Trilby", string(item0.Get("name").GetStringBytes()))
+	require.Equal(t, "A highly effective form of birth control.", string(item0.Get("body").GetStringBytes()),
+		"item0 must have Trilby's review body")
+
+	require.Equal(t, "Fedora", string(item1.Get("name").GetStringBytes()))
+	require.Equal(t, "Fedoras are one of the most fashionable hats around.", string(item1.Get("body").GetStringBytes()),
+		"item1 must have Fedora's review body")
+}
+
+// TestDeepCopy_InterleaveParseAndCopy simulates the GraphQL resolver flow:
+// parse a large response, parse L2 entities, then DeepCopy the entities.
+// All operations use the same parser and arena.
+func TestDeepCopy_InterleaveParseAndCopy(t *testing.T) {
+	a := arena.NewMonotonicArena(arena.WithMinBufferSize(4096))
+	var p Parser
+
+	// Step 1: Parse L2 entities (simulating bulkL2Lookup)
+	entity0, err := p.ParseBytesWithArena(a, []byte(`{"id":"r1","body":"A highly effective form of birth control.","author":{"id":"1"}}`))
+	require.NoError(t, err)
+	entity1, err := p.ParseBytesWithArena(a, []byte(`{"id":"r2","body":"Fedoras are one of the most fashionable hats around.","author":{"id":"2"}}`))
+	require.NoError(t, err)
+
+	// Step 2: Parse a root response (simulating mergeResult for the root fetch,
+	// which happens BEFORE mergeResult for the entity fetch in Phase 4)
+	rootResponse, err := p.ParseBytesWithArena(a, []byte(`{"data":{"topProducts":[{"name":"Trilby","upc":"top-1"},{"name":"Fedora","upc":"top-2"}]}}`))
+	require.NoError(t, err)
+	require.NotNil(t, rootResponse)
+
+	// Step 3: DeepCopy entities (simulating mergeBatchCacheHit in the entity fetch)
+	entityArray := ArrayValue(a)
+	entityArray.SetArrayItem(a, 0, NullValue)
+	entityArray.SetArrayItem(a, 1, NullValue)
+	entityArray.SetArrayItem(a, 0, p.DeepCopy(a, entity0))
+	entityArray.SetArrayItem(a, 1, p.DeepCopy(a, entity1))
+
+	// Verify each entity is independent and correct
+	items := entityArray.GetArray()
+	require.Len(t, items, 2)
+
+	body0 := string(items[0].Get("body").GetStringBytes())
+	body1 := string(items[1].Get("body").GetStringBytes())
+	require.Equal(t, "A highly effective form of birth control.", body0,
+		"entity 0 body corrupted after interleaved parse")
+	require.Equal(t, "Fedoras are one of the most fashionable hats around.", body1,
+		"entity 1 body corrupted after interleaved parse")
+}
+
+// TestDeepCopy_MultipleSequentialCopies verifies that calling DeepCopy
+// multiple times in sequence on the same parser produces independent copies.
+func TestDeepCopy_MultipleSequentialCopies(t *testing.T) {
+	a := arena.NewMonotonicArena(arena.WithMinBufferSize(4096))
+	var p Parser
+
+	entities := make([]*Value, 10)
+	for i := range entities {
+		json := []byte(`{"id":"` + string(rune('a'+i)) + `","value":` + string(rune('0'+i)) + `}`)
+		v, err := p.ParseBytesWithArena(a, json)
+		require.NoError(t, err)
+		entities[i] = v
+	}
+
+	// DeepCopy all entities sequentially using same parser
+	copies := make([]*Value, len(entities))
+	for i, e := range entities {
+		copies[i] = p.DeepCopy(a, e)
+	}
+
+	// Verify all copies are independent and correct
+	for i, cp := range copies {
+		id := string(cp.Get("id").GetStringBytes())
+		expected := string(rune('a' + i))
+		require.Equal(t, expected, id, "copy %d has wrong id", i)
+	}
+}
+
+// TestDeepCopy_SetAfterCopyDoesNotCorruptSiblings verifies that adding a new
+// field to a DeepCopy'd object via Object.Set does not corrupt sibling objects
+// in the same DeepCopy'd tree. This is a regression test for a bug where
+// allocObjectRefs returned slices with excess capacity extending into the next
+// object's slab region, causing arena.SliceAppend to overwrite sibling KV entries.
+func TestDeepCopy_SetAfterCopyDoesNotCorruptSiblings(t *testing.T) {
+	a := arena.NewMonotonicArena(arena.WithMinBufferSize(4096))
+	var p Parser
+
+	// Source: an object containing an array of two sibling objects
+	src, err := p.ParseBytesWithArena(a, []byte(`{"items":[{"name":"Alice","id":"1"},{"name":"Bob","id":"2"}]}`))
+	require.NoError(t, err)
+
+	// DeepCopy the whole tree
+	cp := p.DeepCopy(a, src)
+
+	// Get the two sibling objects from the copied array
+	items := cp.Get("items").GetArray()
+	require.Len(t, items, 2)
+	alice := items[0]
+	bob := items[1]
+
+	// Add a new field to Alice — this must NOT corrupt Bob
+	alice.Set(a, "extra", StringValue(a, "new-field"))
+
+	// Verify Alice has the new field
+	require.Equal(t, "new-field", string(alice.Get("extra").GetStringBytes()))
+
+	// Verify Bob is unchanged
+	require.Equal(t, "Bob", string(bob.Get("name").GetStringBytes()),
+		"Bob's name was corrupted by Set on Alice")
+	require.Equal(t, "2", string(bob.Get("id").GetStringBytes()),
+		"Bob's id was corrupted by Set on Alice")
+	require.Nil(t, bob.Get("extra"),
+		"Bob should not have Alice's extra field")
+}
+
+// TestStructuralCopy_SetAfterCopyDoesNotCorruptSiblings is the same test but
+// for StructuralCopy. Both use the same slab allocator so both need the fix.
+func TestStructuralCopy_SetAfterCopyDoesNotCorruptSiblings(t *testing.T) {
+	a := arena.NewMonotonicArena(arena.WithMinBufferSize(4096))
+	var p Parser
+
+	src, err := p.ParseBytesWithArena(a, []byte(`{"items":[{"name":"Alice","id":"1"},{"name":"Bob","id":"2"}]}`))
+	require.NoError(t, err)
+
+	cp := p.StructuralCopy(a, src)
+
+	items := cp.Get("items").GetArray()
+	require.Len(t, items, 2)
+	alice := items[0]
+	bob := items[1]
+
+	alice.Set(a, "extra", StringValue(a, "new-field"))
+
+	require.Equal(t, "new-field", string(alice.Get("extra").GetStringBytes()))
+	require.Equal(t, "Bob", string(bob.Get("name").GetStringBytes()),
+		"Bob's name was corrupted by Set on Alice")
+	require.Equal(t, "2", string(bob.Get("id").GetStringBytes()),
+		"Bob's id was corrupted by Set on Alice")
+	require.Nil(t, bob.Get("extra"),
+		"Bob should not have Alice's extra field")
 }

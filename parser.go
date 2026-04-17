@@ -628,9 +628,7 @@ func (o *Object) Visit(f func(key []byte, v *Value)) {
 // Cache-friendly layout: hot data first, compact structure
 type Value struct {
 	t                 Type // HOT: accessed on every operation
-	stringRaw         bool // TypeString only: s contains raw JSON string contents
-	stringHasEscapes  bool // TypeString+stringRaw only: raw string contains backslash escapes
-	stringNeedsEscape bool // TypeString+!stringRaw only: decoded string needs escaping on marshal
+	stringNeedsEscape bool // TypeString only: decoded string needs escaping on marshal
 	s                 string
 	a                 []*Value
 	o                 Object
@@ -652,12 +650,6 @@ func (v *Value) MarshalTo(dst []byte) []byte {
 		dst = append(dst, ']')
 		return dst
 	case TypeString:
-		if v.stringRaw {
-			dst = append(dst, '"')
-			dst = append(dst, v.s...)
-			dst = append(dst, '"')
-			return dst
-		}
 		return appendQuotedString(dst, v.s, v.stringNeedsEscape)
 	case TypeNumber:
 		return append(dst, v.s...)
@@ -890,7 +882,6 @@ func (v *Value) GetStringBytes(keys ...string) []byte {
 	if v == nil || v.Type() != TypeString {
 		return nil
 	}
-	v.ensureDecodedString()
 	return s2b(v.s)
 }
 
@@ -940,22 +931,7 @@ func (v *Value) StringBytes() ([]byte, error) {
 	if v.Type() != TypeString {
 		return nil, fmt.Errorf("value doesn't contain string; it contains %s", v.Type())
 	}
-	v.ensureDecodedString()
 	return s2b(v.s), nil
-}
-
-func (v *Value) ensureDecodedString() {
-	if v == nil || v.t != TypeString || !v.stringRaw {
-		return
-	}
-	if !v.stringHasEscapes {
-		v.stringRaw = false
-		v.stringNeedsEscape = false
-		return
-	}
-	v.s, v.stringNeedsEscape = unescapeStringBestEffortInfo(nil, v.s)
-	v.stringRaw = false
-	v.stringHasEscapes = false
 }
 
 // Float64 returns the underlying JSON number for the v.

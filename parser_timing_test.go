@@ -161,6 +161,7 @@ var benchPoolMarshalTo Parser
 var benchDeepCopySink *Value
 var benchParserDeepCopy Parser
 var benchParserStructuralCopy Parser
+var benchParserStructuralCopyWithTransform Parser
 var benchStringBytesSink []byte
 var benchMarshalBytesSink []byte
 
@@ -194,19 +195,30 @@ func BenchmarkStructuralCopy(b *testing.B) {
 	})
 }
 
-func BenchmarkStringBytesRaw(b *testing.B) {
+func BenchmarkStructuralCopyWithTransform(b *testing.B) {
+	b.Run("small", func(b *testing.B) {
+		benchmarkStructuralCopyWithTransform(b, smallFixture)
+	})
+	b.Run("medium", func(b *testing.B) {
+		benchmarkStructuralCopyWithTransform(b, mediumFixture)
+	})
+	b.Run("20mb", func(b *testing.B) {
+		benchmarkStructuralCopyWithTransform(b, huge20MbFixture)
+	})
+}
+
+func BenchmarkStringBytes(b *testing.B) {
 	b.Run("plain", func(b *testing.B) {
-		benchmarkStringBytesRaw(b, Value{
-			t:         TypeString,
-			stringRaw: true,
-			s:         "plain string value",
+		benchmarkStringBytes(b, Value{
+			t: TypeString,
+			s: "plain string value",
 		})
 	})
 	b.Run("escaped", func(b *testing.B) {
-		benchmarkStringBytesRaw(b, Value{
-			t:         TypeString,
-			stringRaw: true,
-			s:         `he said \"hi\"\n`,
+		benchmarkStringBytes(b, Value{
+			t:                 TypeString,
+			stringNeedsEscape: true,
+			s:                 "he said \"hi\"\n",
 		})
 	})
 }
@@ -292,7 +304,43 @@ func benchmarkStructuralCopy(b *testing.B, s string) {
 	runtime.KeepAlive(srcArena)
 }
 
-func benchmarkStringBytesRaw(b *testing.B, template Value) {
+func benchmarkStructuralCopyWithTransform(b *testing.B, s string) {
+	srcArena := arena.NewMonotonicArena()
+	var srcParser Parser
+	src, err := srcParser.ParseWithArena(srcArena, s)
+	if err != nil {
+		panic(fmt.Errorf("unexpected error: %s", err))
+	}
+
+	// Build a transform that renames the first few top-level keys.
+	// This is representative of the entity caching use case (2-5 field renames).
+	o, _ := src.Object()
+	var entries []TransformEntry
+	for _, kv := range o.kvs {
+		entries = append(entries, TransformEntry{
+			InputKey:  kv.k,
+			OutputKey: "xf_" + kv.k,
+		})
+	}
+	xform := &Transform{Entries: entries}
+
+	dstArena := arena.NewMonotonicArena()
+	for i := 0; i < 2; i++ {
+		dstArena.Reset()
+		benchDeepCopySink = benchParserStructuralCopyWithTransform.StructuralCopyWithTransform(dstArena, src, xform)
+	}
+	dstArena.Reset()
+	b.ReportAllocs()
+	b.SetBytes(int64(len(s)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dstArena.Reset()
+		benchDeepCopySink = benchParserStructuralCopyWithTransform.StructuralCopyWithTransform(dstArena, src, xform)
+	}
+	runtime.KeepAlive(srcArena)
+}
+
+func benchmarkStringBytes(b *testing.B, template Value) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		v := template

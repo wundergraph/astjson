@@ -145,6 +145,34 @@ func (p *Parser) StructuralCopy(a arena.Arena, v *Value) *Value {
 	return state.structuralCopyValue(v)
 }
 
+// StructuralCopyWithTransform clones v onto arena a, applying transform t
+// to rename and filter object fields during the copy.
+//
+// Container nodes (objects, arrays) are reallocated on a. Leaf nodes
+// (strings, numbers, bools, nulls) are aliased from the source unchanged,
+// same as [Parser.StructuralCopy].
+//
+// Object key strings in the output are copied onto the arena from
+// t.OutputKey to ensure GC safety — arena memory is noscan, so a heap
+// string referenced only from an arena-allocated kv would be invisible
+// to the GC.
+//
+// When t is nil, behaves identically to [Parser.StructuralCopy].
+// When a is nil (heap mode), allocations fall back to the heap.
+func (p *Parser) StructuralCopyWithTransform(a arena.Arena, v *Value, t *Transform) *Value {
+	if t == nil {
+		return p.StructuralCopy(a, v)
+	}
+	if v == nil {
+		return v
+	}
+
+	scratch := p.ensureArenaScratch()
+	plan := planStructuralCopyWithTransformScratch(v, t, scratch)
+	state := newDeepCopyFillState(a, plan)
+	return state.structuralCopyWithTransformValue(v, t)
+}
+
 type deepCopyPlan struct {
 	values      int
 	kvs         int
@@ -208,6 +236,79 @@ func planStructuralCopyWithScratch(v *Value, scratch *arenaPlanScratch) deepCopy
 		scratch.deepCopyArraySizes = plan.arraySizes[:0]
 	}
 	return plan
+}
+
+func planStructuralCopyWithTransformScratch(v *Value, t *Transform, scratch *arenaPlanScratch) deepCopyPlan {
+	var plan deepCopyPlan
+	if scratch != nil {
+		plan.objectSizes = scratch.deepCopyObjectSizes[:0]
+		plan.arraySizes = scratch.deepCopyArraySizes[:0]
+	}
+	countStructuralCopyWithTransformValue(&plan, v, t)
+	if scratch != nil {
+		scratch.deepCopyObjectSizes = plan.objectSizes[:0]
+		scratch.deepCopyArraySizes = plan.arraySizes[:0]
+	}
+	return plan
+}
+
+func countStructuralCopyWithTransformValue(plan *deepCopyPlan, v *Value, t *Transform) {
+	if v == nil {
+		return
+	}
+
+	switch v.t {
+	case TypeObject:
+		if t == nil {
+			// No transform at this level — count as plain structural copy.
+			countStructuralCopyValue(plan, v)
+			return
+		}
+		plan.values++
+		// Over-count: allocate slots for all Entries + source fields (passthrough).
+		maxFields := len(t.Entries)
+		if t.Passthrough {
+			maxFields += len(v.o.kvs)
+		}
+		plan.objectSizes = append(plan.objectSizes, maxFields)
+		plan.kvs += maxFields
+
+		// Count children and OutputKey string bytes (copied onto the arena
+		// for GC safety — see [Parser.StructuralCopyWithTransform]).
+		for i := range t.Entries {
+			plan.stringBytes += len(t.Entries[i].OutputKey)
+			child := v.Get(t.Entries[i].InputKey)
+			if child == nil {
+				continue
+			}
+			if t.Entries[i].Child != nil {
+				countStructuralCopyWithTransformValue(plan, child, t.Entries[i].Child)
+			} else {
+				countStructuralCopyValue(plan, child)
+			}
+		}
+		if t.Passthrough {
+			// Passthrough fields are structurally copied verbatim.
+			for _, entry := range v.o.kvs {
+				countStructuralCopyValue(plan, entry.v)
+			}
+		}
+
+	case TypeArray:
+		plan.values++
+		plan.arraySizes = append(plan.arraySizes, len(v.a))
+		plan.arrayElems += len(v.a)
+		if t != nil && t.ArrayItem != nil {
+			for _, item := range v.a {
+				countStructuralCopyWithTransformValue(plan, item, t.ArrayItem)
+			}
+		} else {
+			for _, item := range v.a {
+				countStructuralCopyValue(plan, item)
+			}
+		}
+	}
+	// Scalars: no allocation needed (aliased from source).
 }
 
 func countDeepCopyValue(plan *deepCopyPlan, v *Value) {
@@ -307,13 +408,13 @@ func (f *deepCopyFillState) allocKV() *kv {
 func (f *deepCopyFillState) allocObjectRefs(n int) []*kv {
 	start := f.objectRefPos
 	f.objectRefPos += n
-	return f.objectRefs[start:f.objectRefPos]
+	return f.objectRefs[start:f.objectRefPos:f.objectRefPos]
 }
 
 func (f *deepCopyFillState) allocArrayRefs(n int) []*Value {
 	start := f.arrayRefPos
 	f.arrayRefPos += n
-	return f.arrayRefs[start:f.arrayRefPos]
+	return f.arrayRefs[start:f.arrayRefPos:f.arrayRefPos]
 }
 
 func (f *deepCopyFillState) allocString(n int) []byte {
@@ -362,8 +463,6 @@ func (f *deepCopyFillState) copyValue(v *Value) *Value {
 
 	cp := f.allocValue()
 	cp.t = v.t
-	cp.stringRaw = v.stringRaw
-	cp.stringHasEscapes = v.stringHasEscapes
 	cp.stringNeedsEscape = v.stringNeedsEscape
 	cp.s = ""
 	cp.a = nil
@@ -409,9 +508,6 @@ func (f *deepCopyFillState) structuralCopyValue(v *Value) *Value {
 	case TypeObject:
 		cp := f.allocValue()
 		cp.t = TypeObject
-		cp.stringRaw = false
-		cp.stringHasEscapes = false
-		cp.stringNeedsEscape = false
 		cp.s = ""
 		cp.a = nil
 		cp.o.reset()
@@ -433,9 +529,6 @@ func (f *deepCopyFillState) structuralCopyValue(v *Value) *Value {
 	case TypeArray:
 		cp := f.allocValue()
 		cp.t = TypeArray
-		cp.stringRaw = false
-		cp.stringHasEscapes = false
-		cp.stringNeedsEscape = false
 		cp.s = ""
 		cp.a = nil
 		cp.o.reset()
@@ -450,6 +543,117 @@ func (f *deepCopyFillState) structuralCopyValue(v *Value) *Value {
 		}
 		return cp
 	default:
+		// Scalars: alias from source. Safe for concurrent reads because
+		// strings are always eagerly decoded during parsing — no lazy
+		// mutation can race.
+		return v
+	}
+}
+
+func (f *deepCopyFillState) structuralCopyWithTransformValue(v *Value, t *Transform) *Value {
+	if v == nil {
+		return nil
+	}
+
+	switch v.t {
+	case TypeObject:
+		if t == nil {
+			return f.structuralCopyValue(v)
+		}
+		cp := f.allocValue()
+		cp.t = TypeObject
+		cp.s = ""
+		cp.a = nil
+		cp.o.reset()
+
+		maxFields := f.nextObjectSize()
+		if maxFields == 0 {
+			return cp
+		}
+		refs := f.allocObjectRefs(maxFields)
+
+		n := 0
+		for i := range t.Entries {
+			child := v.Get(t.Entries[i].InputKey)
+			if child == nil {
+				continue
+			}
+			newKV := f.allocKV()
+			// OutputKey is copied onto the arena for GC safety — see
+			// [Parser.StructuralCopyWithTransform].
+			newKV.k = f.copyString(t.Entries[i].OutputKey)
+			newKV.keyUnescaped = true
+			newKV.keyNeedsEscape = false
+			if t.Entries[i].Child != nil {
+				newKV.v = f.structuralCopyWithTransformValue(child, t.Entries[i].Child)
+			} else {
+				newKV.v = f.structuralCopyValue(child)
+			}
+			refs[n] = newKV
+			n++
+		}
+		if t.Passthrough {
+			// Copy source fields not already handled by Entries.
+			for _, entry := range v.o.kvs {
+				handled := false
+				for i := range t.Entries {
+					if entry.k == t.Entries[i].InputKey {
+						handled = true
+						break
+					}
+				}
+				// Rename wins: if an Entries OutputKey already emitted a field
+				// matching this source field, skip it to avoid producing JSON
+				// with duplicate keys. refs[0:n] holds the emitted kvs.
+				if !handled {
+					for i := 0; i < n; i++ {
+						if entry.k == refs[i].k {
+							handled = true
+							break
+						}
+					}
+				}
+				if handled {
+					continue
+				}
+				newKV := f.allocKV()
+				newKV.k = entry.k
+				newKV.keyUnescaped = entry.keyUnescaped
+				newKV.keyNeedsEscape = entry.keyNeedsEscape
+				newKV.v = f.structuralCopyValue(entry.v)
+				refs[n] = newKV
+				n++
+			}
+		}
+		cp.o.kvs = refs[:n]
+		return cp
+
+	case TypeArray:
+		cp := f.allocValue()
+		cp.t = TypeArray
+		cp.s = ""
+		cp.a = nil
+		cp.o.reset()
+
+		count := f.nextArraySize()
+		if count == 0 {
+			return cp
+		}
+		cp.a = f.allocArrayRefs(count)
+		if t != nil && t.ArrayItem != nil {
+			for i, item := range v.a {
+				cp.a[i] = f.structuralCopyWithTransformValue(item, t.ArrayItem)
+			}
+		} else {
+			for i, item := range v.a {
+				cp.a[i] = f.structuralCopyValue(item)
+			}
+		}
+		return cp
+
+	default:
+		// Scalars: alias from source. Safe for concurrent reads because
+		// strings are always eagerly decoded — no lazy mutation can race.
 		return v
 	}
 }

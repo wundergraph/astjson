@@ -337,8 +337,6 @@ func (f *arenaFillState) finish() error {
 func (f *arenaFillState) allocValue() *Value {
 	v := &f.values[f.valuePos]
 	f.valuePos++
-	v.stringRaw = false
-	v.stringHasEscapes = false
 	v.stringNeedsEscape = false
 	return v
 }
@@ -417,9 +415,11 @@ func (f *arenaFillState) parseValue(s string, depth int) (*Value, string, error)
 		}
 		v := f.allocValue()
 		v.t = TypeString
-		v.s = raw
-		v.stringRaw = true
-		v.stringHasEscapes = span.hasEscape
+		if span.hasEscape {
+			v.s, v.stringNeedsEscape = unescapeStringBestEffortInfo(f.a, raw)
+		} else {
+			v.s = raw
+		}
 		v.a = nil
 		v.o.reset()
 		return v, tail, nil

@@ -176,7 +176,7 @@ func TestParseBytesWithArenaRejectsMalformedStrings(t *testing.T) {
 	}
 }
 
-func TestParseBytesWithArenaLazilyDecodesStringValues(t *testing.T) {
+func TestParseBytesWithArenaRoundTripsEscapedStrings(t *testing.T) {
 	input := []byte(`{"msg":"hello\nworld","plain":"ok"}`)
 
 	var parser Parser
@@ -200,11 +200,11 @@ func TestParseBytesWithArenaLazilyDecodesStringValues(t *testing.T) {
 	}
 
 	if got := string(v.MarshalTo(nil)); got != string(input) {
-		t.Fatalf("marshal after decode mismatch: got %q want %q", got, string(input))
+		t.Fatalf("marshal after reading string mismatch: got %q want %q", got, string(input))
 	}
 }
 
-func TestParseBytesWithArenaTracksStringEscapeFlags(t *testing.T) {
+func TestParseBytesWithArenaEagerlyDecodesStrings(t *testing.T) {
 	input := []byte(`{"plain":"ok","escaped":"he said \"hi\"\n"}`)
 
 	var parser Parser
@@ -214,43 +214,30 @@ func TestParseBytesWithArenaTracksStringEscapeFlags(t *testing.T) {
 		t.Fatalf("parse failed: %v", err)
 	}
 
+	// Plain string: no escaping needed.
 	plain := v.Get("plain")
-	if !plain.stringRaw {
-		t.Fatalf("expected plain string to stay raw before first decode")
-	}
-	if plain.stringHasEscapes {
-		t.Fatalf("expected plain string to report no raw escapes")
-	}
 	if plain.stringNeedsEscape {
-		t.Fatalf("expected plain string to report no marshal escaping")
+		t.Fatalf("expected plain string to not need escaping")
+	}
+	sb, err := plain.StringBytes()
+	if err != nil {
+		t.Fatalf("StringBytes failed: %v", err)
+	}
+	if string(sb) != "ok" {
+		t.Fatalf("plain string = %q, want %q", string(sb), "ok")
 	}
 
+	// Escaped string: eagerly decoded during parse, needs escaping on marshal.
 	escaped := v.Get("escaped")
-	if !escaped.stringRaw {
-		t.Fatalf("expected escaped string to stay raw before first decode")
+	if !escaped.stringNeedsEscape {
+		t.Fatalf("expected escaped string to need escaping on marshal")
 	}
-	if !escaped.stringHasEscapes {
-		t.Fatalf("expected escaped string to report raw escapes")
-	}
-	if escaped.stringNeedsEscape {
-		t.Fatalf("expected escaped string marshal flag to remain unset while raw")
-	}
-
-	sb, err := escaped.StringBytes()
+	sb, err = escaped.StringBytes()
 	if err != nil {
 		t.Fatalf("StringBytes failed: %v", err)
 	}
 	if string(sb) != "he said \"hi\"\n" {
 		t.Fatalf("decoded string = %q", string(sb))
-	}
-	if escaped.stringRaw {
-		t.Fatalf("expected escaped string to be decoded after StringBytes")
-	}
-	if escaped.stringHasEscapes {
-		t.Fatalf("expected raw escape flag to be cleared after decode")
-	}
-	if !escaped.stringNeedsEscape {
-		t.Fatalf("expected decoded string to still require escaping on marshal")
 	}
 }
 
