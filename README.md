@@ -160,7 +160,8 @@ fmt.Println(v) // {"a":{"b":{"c":42}}}
 
 `MergeValues` recursively merges two values. For objects, keys from `b` are
 added to or replace keys in `a`. For arrays, elements are merged pairwise
-(arrays must have equal length). For scalars, `b` replaces `a` when they differ.
+(arrays must have equal length). For scalars, `b` replaces `a` unconditionally —
+no value comparison is performed.
 
 ```go
 a := arena.NewMonotonicArena()
@@ -168,7 +169,7 @@ var p astjson.Parser
 base, _ := p.ParseWithArena(a, `{"name": "alice", "age": 30}`)
 overlay, _ := p.ParseWithArena(a, `{"age": 31, "email": "alice@example.com"}`)
 
-merged, changed, err := astjson.MergeValues(a, base, overlay)
+merged, err := astjson.MergeValues(a, base, overlay)
 fmt.Println(merged) // {"name":"alice","age":31,"email":"alice@example.com"}
 ```
 
@@ -176,7 +177,7 @@ fmt.Println(merged) // {"name":"alice","age":31,"email":"alice@example.com"}
 
 ```go
 extra, _ := p.ParseWithArena(a, `"1.0"`)
-merged, _, _ = astjson.MergeValuesWithPath(a, base, extra, "metadata", "version")
+merged, _ = astjson.MergeValuesWithPath(a, base, extra, "metadata", "version")
 // equivalent to merging {"metadata":{"version":"1.0"}} into base
 ```
 

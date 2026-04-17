@@ -1,7 +1,6 @@
 package astjson
 
 import (
-	"bytes"
 	"errors"
 
 	"github.com/wundergraph/go-arena"
@@ -18,38 +17,43 @@ var (
 
 // MergeValues recursively merges b into a and returns the result. For objects,
 // keys from b are added to or replace keys in a. For arrays, elements are
-// merged pairwise (arrays must have equal length). For scalars, b replaces a
-// when the values differ.
+// merged pairwise (arrays must have equal length). For scalars (numbers,
+// strings, booleans, null), b replaces a unconditionally — no value
+// comparison is performed.
 //
 // The arena ar is used for any new allocations during the merge (new object
 // entries, key copies). Both a and b should have been allocated using the same
 // arena (or both on the heap) to avoid mixing memory lifetimes.
 //
-// Returns the merged value, whether a was changed, and any error.
-// If a is nil, returns (b, true, nil). If b is nil, returns (a, false, nil).
-func MergeValues(ar arena.Arena, a, b *Value) (v *Value, changed bool, err error) {
+// If a is nil, returns (b, nil). If b is nil, returns (a, nil).
+func MergeValues(ar arena.Arena, a, b *Value) (*Value, error) {
 	if a == nil {
-		return b, true, nil
+		return b, nil
 	}
 	if b == nil {
-		return a, false, nil
+		return a, nil
 	}
-	if b.Type() == TypeNull && a.Type() == TypeObject {
-		// we assume that null was returned in an error case for resolving a nested object field
-		// as we've got an object on the left side, we don't override the whole object with null
-		// instead, we keep the left object and discard the null on the right side
-		return a, false, nil
+	at, bt := a.t, b.t
+	if bt == TypeNull && at == TypeObject {
+		// We assume that null was returned in an error case for resolving a
+		// nested object field. Since a is an object, keep it and discard the
+		// null on the right.
+		return a, nil
 	}
-	aBool, bBool := a.Type() == TypeTrue || a.Type() == TypeFalse, b.Type() == TypeTrue || b.Type() == TypeFalse
-	booleans := aBool && bBool
-	if a.Type() != b.Type() && !booleans {
-		return nil, false, ErrMergeDifferentTypes
+	if at != bt {
+		// Types only compose when both are boolean — true and false are
+		// interchangeable. Anything else is an error.
+		aBool := at == TypeTrue || at == TypeFalse
+		bBool := bt == TypeTrue || bt == TypeFalse
+		if !aBool || !bBool {
+			return nil, ErrMergeDifferentTypes
+		}
+		return b, nil
 	}
-	switch a.Type() {
+	switch at {
 	case TypeObject:
 		ao, _ := a.Object()
 		bo, _ := b.Object()
-		// Unescape keys as needed during iteration
 		for i := range bo.kvs {
 			if !bo.kvs[i].keyUnescaped {
 				bo.unescapeKey(ar, bo.kvs[i])
@@ -58,70 +62,51 @@ func MergeValues(ar arena.Arena, a, b *Value) (v *Value, changed bool, err error
 		for i := range bo.kvs {
 			k := bo.kvs[i].k
 			r := bo.kvs[i].v
-			l := ao.Get(k)
-			if l == nil {
+			// Inline the kv lookup so we can mutate akv.v directly when the
+			// key already exists — avoids the O(|A|) linear scan inside
+			// Object.Set for matching keys.
+			var akv *kv
+			for j := range ao.kvs {
+				if ao.kvs[j].k == k {
+					akv = ao.kvs[j]
+					break
+				}
+			}
+			if akv == nil {
 				ao.Set(ar, k, r)
 				continue
 			}
-			n, changed, err := MergeValues(ar, l, r)
+			n, err := MergeValues(ar, akv.v, r)
 			if err != nil {
-				return nil, false, err
+				return nil, err
 			}
-			if changed {
-				ao.Set(ar, k, n)
-			}
+			akv.v = n
 		}
-		return a, false, nil
+		return a, nil
 	case TypeArray:
 		aa, _ := a.Array()
 		ba, _ := b.Array()
 		if len(aa) == 0 {
-			return b, true, nil
+			return b, nil
 		}
 		if len(ba) == 0 {
-			return a, false, nil
+			return a, nil
 		}
 		if len(aa) != len(ba) {
-			return nil, false, ErrMergeDifferingArrayLengths
+			return nil, ErrMergeDifferingArrayLengths
 		}
 		for i := range aa {
-			n, changed, err := MergeValues(ar, aa[i], ba[i])
+			n, err := MergeValues(ar, aa[i], ba[i])
 			if err != nil {
-				return nil, false, err
+				return nil, err
 			}
-			if changed {
-				aa[i] = n
-			}
+			aa[i] = n
 		}
-		return a, false, nil
-	case TypeFalse:
-		if b.Type() == TypeTrue {
-			return b, true, nil
-		}
-		return a, false, nil
-	case TypeTrue:
-		if b.Type() == TypeFalse {
-			return b, true, nil
-		}
-		return a, false, nil
-	case TypeNull:
-		return a, false, nil
-	case TypeNumber:
-		af, _ := a.Float64()
-		bf, _ := b.Float64()
-		if af != bf {
-			return b, true, nil
-		}
-		return a, false, nil
-	case TypeString:
-		as, _ := a.StringBytes()
-		bs, _ := b.StringBytes()
-		if !bytes.Equal(as, bs) {
-			return b, true, nil
-		}
-		return a, false, nil
+		return a, nil
+	case TypeTrue, TypeFalse, TypeNull, TypeNumber, TypeString:
+		return b, nil
 	default:
-		return nil, false, ErrMergeUnknownType
+		return nil, ErrMergeUnknownType
 	}
 }
 
@@ -132,7 +117,7 @@ func MergeValues(ar arena.Arena, a, b *Value) (v *Value, changed bool, err error
 // If path is empty, behaves identically to [MergeValues].
 //
 // The arena ar is used for allocating the wrapper objects and during the merge.
-func MergeValuesWithPath(ar arena.Arena, a, b *Value, path ...string) (v *Value, changed bool, err error) {
+func MergeValuesWithPath(ar arena.Arena, a, b *Value, path ...string) (*Value, error) {
 	if len(path) == 0 {
 		return MergeValues(ar, a, b)
 	}

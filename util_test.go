@@ -308,9 +308,9 @@ func TestDeepCopy_BatchEntityPatternWithMerge(t *testing.T) {
 	require.NoError(t, err)
 
 	// DeepCopy and merge each review into its item (simulating MergeValues in mergeResult)
-	_, _, err = MergeValues(a, item0, p.DeepCopy(a, review0))
+	_, err = MergeValues(a, item0, p.DeepCopy(a, review0))
 	require.NoError(t, err)
-	_, _, err = MergeValues(a, item1, p.DeepCopy(a, review1))
+	_, err = MergeValues(a, item1, p.DeepCopy(a, review1))
 	require.NoError(t, err)
 
 	// Verify each item has the correct body

@@ -429,7 +429,7 @@ func TestArenaGCSafety_MergeValues(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse right: %s", i, err)
 		}
-		merged, _, err := MergeValues(a, left, right)
+		merged, err := MergeValues(a, left, right)
 		if err != nil {
 			t.Fatalf("iteration %d: merge: %s", i, err)
 		}
@@ -475,7 +475,7 @@ func TestArenaGCSafety_MergeValuesWithPath(t *testing.T) {
 			t.Fatalf("iteration %d: parse left: %s", i, err)
 		}
 		right := StringValue(a, heapString("merged", i))
-		merged, _, err := MergeValuesWithPath(a, left, right, "data", "nested")
+		merged, err := MergeValuesWithPath(a, left, right, "data", "nested")
 		if err != nil {
 			t.Fatalf("iteration %d: merge: %s", i, err)
 		}
@@ -976,7 +976,7 @@ func TestArenaGCSafety_ComplexWorkflow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse extra: %s", i, err)
 		}
-		merged, _, err := MergeValues(a, base, extra)
+		merged, err := MergeValues(a, base, extra)
 		if err != nil {
 			t.Fatalf("iteration %d: merge: %s", i, err)
 		}
@@ -1429,7 +1429,7 @@ func TestArenaGCSafety_MergeValues_ScalarReplacement(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse right: %s", i, err)
 		}
-		merged, _, err := MergeValues(a, left, right)
+		merged, err := MergeValues(a, left, right)
 		if err != nil {
 			t.Fatalf("iteration %d: merge: %s", i, err)
 		}
@@ -1473,7 +1473,7 @@ func TestArenaGCSafety_MergeValues_RecursiveObjects(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse right: %s", i, err)
 		}
-		merged, _, err := MergeValues(a, left, right)
+		merged, err := MergeValues(a, left, right)
 		if err != nil {
 			t.Fatalf("iteration %d: merge: %s", i, err)
 		}
@@ -1531,12 +1531,9 @@ func TestArenaGCSafety_MergeValues_EmptyArrays(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse right: %s", i, err)
 		}
-		merged, changed, err := MergeValues(a, left, right)
+		merged, err := MergeValues(a, left, right)
 		if err != nil {
 			t.Fatalf("iteration %d: merge empty+full: %s", i, err)
-		}
-		if !changed {
-			t.Fatalf("iteration %d: expected changed=true for empty left", i)
 		}
 		forceGC()
 		arr := merged.GetArray()
@@ -1556,12 +1553,9 @@ func TestArenaGCSafety_MergeValues_EmptyArrays(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse right2: %s", i, err)
 		}
-		merged2, changed2, err := MergeValues(a, left2, right2)
+		merged2, err := MergeValues(a, left2, right2)
 		if err != nil {
 			t.Fatalf("iteration %d: merge full+empty: %s", i, err)
-		}
-		if changed2 {
-			t.Fatalf("iteration %d: expected changed=false for empty right", i)
 		}
 		forceGC()
 		arr2 := merged2.GetArray()
@@ -1588,12 +1582,9 @@ func TestArenaGCSafety_MergeValues_NullHandling(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse right: %s", i, err)
 		}
-		merged, changed, err := MergeValues(a, left, right)
+		merged, err := MergeValues(a, left, right)
 		if err != nil {
 			t.Fatalf("iteration %d: merge: %s", i, err)
-		}
-		if changed {
-			t.Fatalf("iteration %d: expected changed=false for null right on object left", i)
 		}
 		forceGC()
 
