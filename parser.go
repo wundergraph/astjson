@@ -138,18 +138,9 @@ func skipWS(s string) string {
 }
 
 func skipWSSlow(s string) string {
-	if len(s) == 0 {
-		return s
-	}
-
-	// Branch prediction optimization: check most common whitespace first
-	// Space (0x20) is most common, then newline, tab, carriage return
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c != 0x20 { // Most common whitespace
-			if c != 0x0A && c != 0x09 && c != 0x0D {
-				return s[i:]
-			}
+		if charFlags[s[i]]&charWS == 0 {
+			return s[i:]
 		}
 	}
 	return ""
@@ -365,15 +356,8 @@ func appendQuotedString(dst []byte, s string, needsEscape bool) []byte {
 }
 
 func hasSpecialChars(s string) bool {
-	// Branch prediction optimization: check most common cases first
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		// Most common special chars first
-		if c == '"' || c == '\\' {
-			return true
-		}
-		// Control characters - less common
-		if c < 0x20 {
+		if charFlags[s[i]]&charEscape != 0 {
 			return true
 		}
 	}
@@ -498,8 +482,7 @@ func parseRawNumber(s string) (string, string, error) {
 
 	// Find the end of the number.
 	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		if (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || ch == 'e' || ch == 'E' || ch == '+' {
+		if charFlags[s[i]]&charNumChar != 0 {
 			continue
 		}
 		if i == 0 || i == 1 && (s[0] == '-' || s[0] == '+') {
