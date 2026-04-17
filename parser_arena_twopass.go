@@ -500,7 +500,7 @@ func (f *arenaFillState) parseArray(s string, depth int) (*Value, string, error)
 		s = skipWS(s)
 		if i == count-1 {
 			if len(s) == 0 || s[0] != ']' {
-				return nil, s, errParseMissingCommaArray
+				return nil, s, errParseMissingCloseBracket
 			}
 			return v, s[1:], nil
 		}
@@ -563,7 +563,7 @@ func (f *arenaFillState) parseObject(s string, depth int) (*Value, string, error
 		s = skipWS(s)
 		if i == count-1 {
 			if len(s) == 0 || s[0] != '}' {
-				return nil, s, errParseMissingCommaObject
+				return nil, s, errParseMissingCloseBrace
 			}
 			return v, s[1:], nil
 		}

@@ -1,6 +1,7 @@
 package astjson
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -369,7 +370,7 @@ func TestDeepCopy_MultipleSequentialCopies(t *testing.T) {
 
 	entities := make([]*Value, 10)
 	for i := range entities {
-		json := []byte(`{"id":"` + string(rune('a'+i)) + `","value":` + string(rune('0'+i)) + `}`)
+		json := []byte(`{"id":"` + string(rune('a'+i)) + `","value":` + strconv.Itoa(i) + `}`)
 		v, err := p.ParseBytesWithArena(a, json)
 		require.NoError(t, err)
 		entities[i] = v

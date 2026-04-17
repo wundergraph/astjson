@@ -594,6 +594,10 @@ func (f *deepCopyFillState) structuralCopyWithTransformValue(v *Value, t *Transf
 		}
 		if t.Passthrough {
 			// Copy source fields not already handled by Entries.
+			// Linear scans are intentional: typical JSON objects have
+			// few fields, and map-based lookups would cost two heap
+			// allocations per call that beat the O(n*m) scan only at
+			// sizes we don't expect to see here.
 			for _, entry := range v.o.kvs {
 				handled := false
 				for i := range t.Entries {

@@ -72,43 +72,46 @@ func TestParseRawNumber(t *testing.T) {
 
 func TestUnescapeStringBestEffort(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
-		testUnescapeStringBestEffort(t, ``, ``)
-		testUnescapeStringBestEffort(t, `\"`, `"`)
-		testUnescapeStringBestEffort(t, `\\`, `\`)
-		testUnescapeStringBestEffort(t, `\\\"`, `\"`)
-		testUnescapeStringBestEffort(t, `\\\"абв`, `\"абв`)
-		testUnescapeStringBestEffort(t, `йцук\n\"\\Y`, "йцук\n\"\\Y")
-		testUnescapeStringBestEffort(t, `q\u1234we`, "q\u1234we")
-		testUnescapeStringBestEffort(t, `п\ud83e\udd2dи`, "п🤭и")
+		testUnescapeStringBestEffort(t, ``, ``, false)
+		testUnescapeStringBestEffort(t, `\"`, `"`, true)
+		testUnescapeStringBestEffort(t, `\\`, `\`, true)
+		testUnescapeStringBestEffort(t, `\\\"`, `\"`, true)
+		testUnescapeStringBestEffort(t, `\\\"абв`, `\"абв`, true)
+		testUnescapeStringBestEffort(t, `йцук\n\"\\Y`, "йцук\n\"\\Y", true)
+		testUnescapeStringBestEffort(t, `q\u1234we`, "q\u1234we", false)
+		testUnescapeStringBestEffort(t, `п\ud83e\udd2dи`, "п🤭и", false)
 	})
 
 	t.Run("error", func(t *testing.T) {
-		testUnescapeStringBestEffort(t, `\`, ``)
-		testUnescapeStringBestEffort(t, `foo\qwe`, `foo\qwe`)
-		testUnescapeStringBestEffort(t, `\"x\uyz\"`, `"x\uyz"`)
-		testUnescapeStringBestEffort(t, `\u12\"пролw`, `\u12"пролw`)
-		testUnescapeStringBestEffort(t, `п\ud83eи`, "п\\ud83eи")
+		testUnescapeStringBestEffort(t, `\`, ``, false)
+		testUnescapeStringBestEffort(t, `foo\qwe`, `foo\qwe`, true)
+		testUnescapeStringBestEffort(t, `\"x\uyz\"`, `"x\uyz"`, true)
+		testUnescapeStringBestEffort(t, `\u12\"пролw`, `\u12"пролw`, true)
+		testUnescapeStringBestEffort(t, `п\ud83eи`, "п\\ud83eи", true)
 	})
 }
 
-func testUnescapeStringBestEffort(t *testing.T, s, expectedS string) {
+func testUnescapeStringBestEffort(t *testing.T, s, expectedS string, expectedNeedsEscape bool) {
 	t.Helper()
 
 	// unescapeString modifies the original s, so call it
 	// on a byte slice copy.
 	b := append([]byte{}, s...)
-	us, _ := unescapeStringBestEffortInfo(nil, b2s(b))
+	us, needsEscape := unescapeStringBestEffortInfo(nil, b2s(b))
 	if us != expectedS {
 		t.Fatalf("unexpected unescaped string; got %q; want %q", us, expectedS)
+	}
+	if needsEscape != expectedNeedsEscape {
+		t.Fatalf("unexpected needsEscape for %q; got %v; want %v", s, needsEscape, expectedNeedsEscape)
 	}
 }
 
 func TestParseRawString(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
-		f := func(s, expectedRS, expectedTail string) {
+		f := func(s, expectedRS, expectedTail string, expectedHasEscape bool) {
 			t.Helper()
 
-			rs, tail, _, err := parseRawStringInfo(s[1:])
+			rs, tail, hasEscape, err := parseRawStringInfo(s[1:])
 			if err != nil {
 				t.Fatalf("unexpected error on parseRawString: %s", err)
 			}
@@ -118,9 +121,12 @@ func TestParseRawString(t *testing.T) {
 			if tail != expectedTail {
 				t.Fatalf("unexpected tail on parseRawString; got %q; want %q", tail, expectedTail)
 			}
+			if hasEscape != expectedHasEscape {
+				t.Fatalf("unexpected hasEscape on parseRawString; got %v; want %v", hasEscape, expectedHasEscape)
+			}
 
 			// parseRawKey results must be identical to parseRawString.
-			rs, tail, _, err = parseRawKey(s[1:])
+			rs, tail, hasEscape, err = parseRawKey(s[1:])
 			if err != nil {
 				t.Fatalf("unexpected error on parseRawKey: %s", err)
 			}
@@ -130,22 +136,25 @@ func TestParseRawString(t *testing.T) {
 			if tail != expectedTail {
 				t.Fatalf("unexpected tail on parseRawKey; got %q; want %q", tail, expectedTail)
 			}
+			if hasEscape != expectedHasEscape {
+				t.Fatalf("unexpected hasEscape on parseRawKey; got %v; want %v", hasEscape, expectedHasEscape)
+			}
 		}
 
-		f(`""`, "", "")
-		f(`""xx`, "", "xx")
-		f(`"foobar"`, "foobar", "")
-		f(`"foobar"baz`, "foobar", "baz")
-		f(`"\""`, `\"`, "")
-		f(`"\""tail`, `\"`, "tail")
-		f(`"\\"`, `\\`, "")
-		f(`"\\"tail`, `\\`, "tail")
-		f(`"x\\"`, `x\\`, "")
-		f(`"x\\"tail`, `x\\`, "tail")
-		f(`"x\\y"`, `x\\y`, "")
-		f(`"x\\y"tail`, `x\\y`, "tail")
-		f(`"\\\"й\n\"я"tail`, `\\\"й\n\"я`, "tail")
-		f(`"\\\\\\\\"tail`, `\\\\\\\\`, "tail")
+		f(`""`, "", "", false)
+		f(`""xx`, "", "xx", false)
+		f(`"foobar"`, "foobar", "", false)
+		f(`"foobar"baz`, "foobar", "baz", false)
+		f(`"\""`, `\"`, "", true)
+		f(`"\""tail`, `\"`, "tail", true)
+		f(`"\\"`, `\\`, "", true)
+		f(`"\\"tail`, `\\`, "tail", true)
+		f(`"x\\"`, `x\\`, "", true)
+		f(`"x\\"tail`, `x\\`, "tail", true)
+		f(`"x\\y"`, `x\\y`, "", true)
+		f(`"x\\y"tail`, `x\\y`, "tail", true)
+		f(`"\\\"й\n\"я"tail`, `\\\"й\n\"я`, "tail", true)
+		f(`"\\\\\\\\"tail`, `\\\\\\\\`, "tail", true)
 
 	})
 
@@ -2134,5 +2143,5 @@ func TestObjectMarshalToRawKey(t *testing.T) {
 
 func TestUnescapeStringBestEffortInvalidSurrogatePairHex(t *testing.T) {
 	// High surrogate \ud83e followed by \u with invalid hex digits
-	testUnescapeStringBestEffort(t, `\ud83e\uzzzz`, `\ud83e\uzzzz`)
+	testUnescapeStringBestEffort(t, `\ud83e\uzzzz`, `\ud83e\uzzzz`, true)
 }
