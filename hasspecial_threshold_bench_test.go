@@ -56,10 +56,10 @@ func hasSpecialCharsLoop(s string) bool {
 	return false
 }
 
-// hasSpecialCharsIndexAny relies on strings.IndexAny. For ASCII-only
+// hasSpecialCharsIndexAny relies on strings.ContainsAny. For ASCII-only
 // charsets this uses an asciiSet bitmap with a tight inner loop.
 func hasSpecialCharsIndexAny(s string) bool {
-	return strings.IndexAny(s, escapeSetString) >= 0
+	return strings.ContainsAny(s, escapeSetString)
 }
 
 const (
