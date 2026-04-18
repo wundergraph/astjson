@@ -332,6 +332,8 @@ func BenchmarkMergeValuesWithChanges(b *testing.B) {
 	})
 }
 
+// intToStr formats a non-negative int as decimal. Negative inputs would
+// loop forever; this helper is only used with benchmark loop indices.
 func intToStr(n int) string {
 	if n == 0 {
 		return "0"

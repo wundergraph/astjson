@@ -40,3 +40,30 @@ func TestMarshalFastPathStaleAncestorSafety(t *testing.T) {
 		t.Fatalf("stale-ancestor fast path emitted wrong bytes\n  got:  %q\n  want: %q", got, want)
 	}
 }
+
+// TestMarshalFastPathStaleAncestorSafetyArray covers the array recursion
+// path in Value.marshalToClean — the analogue of the object test above.
+// Parses a clean array, mutates its first element through a sub-handle so
+// only the root stays stale-true, and asserts MarshalTo still emits valid
+// JSON.
+func TestMarshalFastPathStaleAncestorSafetyArray(t *testing.T) {
+	a := arena.NewMonotonicArena()
+	var p Parser
+	v, err := p.ParseWithArena(a, `[{"inner":1}]`)
+	if err != nil {
+		t.Fatalf("parse: %s", err)
+	}
+	first := v.Get("0")
+	first.Set(a, "dirty\nkey", StringValue(a, "val"))
+	if first.noEscapeSubtree {
+		t.Fatal("first element flag should be invalidated after Set with escaped key")
+	}
+	if !v.noEscapeSubtree {
+		t.Fatal("root flag is expected to be stale-true in this scenario")
+	}
+	got := string(v.MarshalTo(nil))
+	want := `[{"inner":1,"dirty\nkey":"val"}]`
+	if got != want {
+		t.Fatalf("stale-ancestor fast path emitted wrong bytes\n  got:  %q\n  want: %q", got, want)
+	}
+}
