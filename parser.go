@@ -446,8 +446,149 @@ func (v *Value) RecomputeEscapeHint() bool {
 	return v.noEscapeSubtree
 }
 
+// hasSpecialChars reports whether s contains any byte that requires
+// escaping in a JSON string: '"', '\\', or a control byte (< 0x20).
+//
+// ----------------------------------------------------------------------
+// What is SWAR?
+// ----------------------------------------------------------------------
+//
+// SWAR stands for "SIMD Within A Register". It is a way to do parallel
+// byte operations using only ordinary integer instructions — no actual
+// SIMD/vector hardware required. The idea is:
+//
+//  1. Pack 8 bytes side-by-side into one uint64. A 64-bit register is
+//     really "8 lanes of 1 byte each" if you squint at it.
+//  2. Apply scalar ALU ops (+ - & | ^ ~) to the whole uint64 at once.
+//     Those ops naturally act on each lane in parallel — as long as
+//     you choose ops that don't let a lane corrupt its neighbours.
+//  3. One ALU op now does 8 bytes of work. Loading 1 byte and loading
+//     8 bytes both cost a single MOV, so we are getting roughly 8× the
+//     throughput per cycle without touching NEON/AVX at all.
+//
+// The fundamental primitive is the Mycroft "haszero" trick:
+//
+//	hasZeroByte(x) = (x - 0x0101010101010101) & ^x & 0x8080808080808080
+//
+// Why it works, lane by lane:
+//   - Subtracting 1 from a byte that is 0x00 underflows to 0xFF, which
+//     sets that lane's high bit. Subtracting 1 from any byte in 1..255
+//     leaves the high bit clear (or unchanged).
+//   - "& ^x" guards against bytes whose high bit was already set in x
+//     (e.g. 0x80): without this, those would falsely register as "zero".
+//   - "& 0x80..80" keeps only the eight high bits — one bit per lane —
+//     so a single non-zero test answers "any lane matched?" in one branch.
+//
+// Every other predicate we want is a one-line transform on top of haszero:
+//   - "byte == c"   →  hasZeroByte(x ^ broadcast(c))   (XOR makes c → 0)
+//   - "byte <  N"   →  ((x - N*lo) & ^x) & hi          (underflow trick)
+//
+// Caveat — borrow propagation. The subtraction is a real 64-bit subtract,
+// so an underflow in one lane borrows from the next-higher lane and can
+// corrupt its result. That can yield extra "matches", but only ever
+// in lanes adjacent to a *real* match. Since we only ask "did anything
+// match?", the boolean answer is still correct. (If we needed the index
+// of the first match, we would use a saturated variant: `(x | hi) - …`
+// pre-sets each high bit, which absorbs the borrow within a lane and
+// prevents it from crossing into the neighbour.)
+//
+// ----------------------------------------------------------------------
+// How this function uses SWAR
+// ----------------------------------------------------------------------
+//
+// The hot path scans 8 bytes at a time, building three byte-wise
+// predicates in parallel — "byte < 0x20", "byte == '\"'", "byte == '\\'" —
+// then OR-ing them and testing the eight high bits in a single branch.
+// The tail (< 8 leftover bytes) falls back to the per-byte charFlags
+// lookup. Crossover vs. the pure byte loop is at len ≈ 8; see
+// BenchmarkHasSpecialSweep.
+//
+// Constants below are byte-broadcast masks: "lo" sets bit 0 of every
+// byte, "hi" sets bit 7 of every byte; the others broadcast a single
+// byte value (e.g. 0x22 = '"') across all eight lanes so we can test
+// every byte in parallel.
+const (
+	hasSpecialLo     uint64 = 0x0101010101010101 // 1 in each byte (subtract pattern)
+	hasSpecialHi     uint64 = 0x8080808080808080 // high bit of each byte (extract pattern)
+	hasSpecialQuote  uint64 = 0x2222222222222222 // '"'  broadcast
+	hasSpecialBSlash uint64 = 0x5C5C5C5C5C5C5C5C // '\\' broadcast
+	hasSpecial0x20   uint64 = 0x2020202020202020 // 0x20 broadcast
+)
+
 func hasSpecialChars(s string) bool {
-	for i := 0; i < len(s); i++ {
+	i := 0
+	// 8-byte SWAR loop. We process the string in aligned-by-8 chunks
+	// from the head; the residual 0..7 bytes are handled by the tail
+	// loop below.
+	for i+8 <= len(s) {
+		// Hoist the bounds check: a single panic-or-pass at s[i+7]
+		// lets the compiler prove all the s[i..i+6] indexes below are
+		// in range and elide their per-access bounds checks.
+		_ = s[i+7]
+		// Pack 8 bytes into a single uint64 in little-endian order.
+		// On amd64/arm64 the compiler folds this whole expression into
+		// one unaligned 64-bit load, so the cost is one MOV — not eight.
+		// LE order is irrelevant to correctness because every predicate
+		// below is byte-wise (no inter-byte arithmetic semantics relied on).
+		v := uint64(s[i]) |
+			uint64(s[i+1])<<8 |
+			uint64(s[i+2])<<16 |
+			uint64(s[i+3])<<24 |
+			uint64(s[i+4])<<32 |
+			uint64(s[i+5])<<40 |
+			uint64(s[i+6])<<48 |
+			uint64(s[i+7])<<56
+
+		// --- Predicate 1: any byte < 0x20 (control character)?
+		//
+		// Per-byte we want b < 0x20. Subtracting 0x20 from every byte
+		// in parallel underflows exactly the bytes where b < 0x20, and
+		// underflow sets that byte's high bit. The "& ^v" step is what
+		// makes this safe in the presence of high-byte values: for any
+		// byte where the original was >= 0x80, ^v's high bit is 0, so
+		// we can't get a spurious match from a byte that already had
+		// its high bit set.
+		//
+		// Borrow caveat: subtraction is a real 64-bit subtract, so a
+		// borrow can propagate from a lower byte into a higher one and
+		// corrupt that higher byte's result. That can produce extra
+		// "matches" — but a borrow only originates from a byte that
+		// genuinely satisfied b < 0x20. So any cascaded false positive
+		// already coexists with a true positive, and the OR-then-test
+		// at the end still returns the correct boolean.
+		ctrl := (v - hasSpecial0x20) & ^v
+
+		// --- Predicate 2: any byte == '"' (0x22)?
+		//
+		// XOR with the broadcast pattern turns matching bytes into 0x00
+		// and leaves all other bytes non-zero. Then the standard
+		// haszero formula detects any zero byte. Same borrow caveat as
+		// above applies — and is harmless for the same reason.
+		q := v ^ hasSpecialQuote
+		qmask := (q - hasSpecialLo) & ^q
+
+		// --- Predicate 3: any byte == '\\' (0x5C)? Same shape as Predicate 2.
+		sl := v ^ hasSpecialBSlash
+		smask := (sl - hasSpecialLo) & ^sl
+
+		// Combine predicates: each byte's high bit in (ctrl|qmask|smask)
+		// is the disjunction of the three per-byte tests. ANDing with
+		// the high-bit mask isolates just those eight result bits, and
+		// a single non-zero test covers the whole 8-byte window in one
+		// branch. This is what lets SWAR overtake the byte loop: per
+		// byte we pay roughly one ALU op instead of one load + mask +
+		// branch.
+		if (ctrl|qmask|smask)&hasSpecialHi != 0 {
+			return true
+		}
+		i += 8
+	}
+	// Tail: handle the 0..7 bytes that didn't fit into a full SWAR
+	// chunk. Setting up another SWAR pass for ≤ 7 bytes (masking the
+	// unread lanes) costs more than just doing the byte loop here, and
+	// at this point we've already amortized the SWAR setup across the
+	// head of the string anyway.
+	for ; i < len(s); i++ {
 		if charFlags[s[i]]&charEscape != 0 {
 			return true
 		}
