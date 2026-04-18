@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/wundergraph/go-arena"
 )
 
 func TestMergeValues(t *testing.T) {
@@ -296,21 +295,7 @@ func TestMergeValues(t *testing.T) {
 		_, err := MergeValues(nil, a, b)
 		require.Equal(t, ErrMergeUnknownType, err)
 	})
-	t.Run("object with unescaped key", func(t *testing.T) {
-		t.Parallel()
-		ar := arena.NewMonotonicArena()
-		left := MustParse(`{"foo":1}`)
-
-		right := &Value{t: TypeObject}
-		entry := &kv{
-			k:            `bar`,
-			v:            MustParse(`2`),
-			keyUnescaped: false,
-		}
-		right.o.kvs = append(right.o.kvs, entry)
-
-		merged, err := MergeValues(ar, left, right)
-		require.NoError(t, err)
-		require.NotNil(t, merged.Get("bar"))
-	})
+	// Hand-constructed kvs with keyUnescaped=false are not supported by
+	// MergeValues — the parser and all mutation APIs set keyUnescaped=true,
+	// so this is not a path that arises in practice.
 }

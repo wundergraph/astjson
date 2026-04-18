@@ -54,11 +54,10 @@ func MergeValues(ar arena.Arena, a, b *Value) (*Value, error) {
 	case TypeObject:
 		ao, _ := a.Object()
 		bo, _ := b.Object()
-		for i := range bo.kvs {
-			if !bo.kvs[i].keyUnescaped {
-				bo.unescapeKey(ar, bo.kvs[i])
-			}
-		}
+		// Invariant: every kv produced by this package's parsers or mutation
+		// APIs has keyUnescaped == true. Callers who hand-construct kvs with
+		// keyUnescaped == false are not supported by MergeValues — inline key
+		// comparison below assumes decoded keys on both sides.
 		for i := range bo.kvs {
 			k := bo.kvs[i].k
 			r := bo.kvs[i].v
@@ -82,6 +81,16 @@ func MergeValues(ar arena.Arena, a, b *Value) (*Value, error) {
 			}
 			akv.v = n
 		}
+		// Recompute the subtree-clean hint from the post-merge kvs. Each
+		// recursive call already refreshed its own node; we aggregate here.
+		clean := true
+		for _, kv := range ao.kvs {
+			if kv.keyNeedsEscape || !valueIsEscapeFree(kv.v) {
+				clean = false
+				break
+			}
+		}
+		a.noEscapeSubtree = clean
 		return a, nil
 	case TypeArray:
 		aa, _ := a.Array()
@@ -95,13 +104,18 @@ func MergeValues(ar arena.Arena, a, b *Value) (*Value, error) {
 		if len(aa) != len(ba) {
 			return nil, ErrMergeDifferingArrayLengths
 		}
+		clean := true
 		for i := range aa {
 			n, err := MergeValues(ar, aa[i], ba[i])
 			if err != nil {
 				return nil, err
 			}
 			aa[i] = n
+			if !valueIsEscapeFree(n) {
+				clean = false
+			}
 		}
+		a.noEscapeSubtree = clean
 		return a, nil
 	case TypeTrue, TypeFalse, TypeNull, TypeNumber, TypeString:
 		return b, nil

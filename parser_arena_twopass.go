@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -340,6 +341,7 @@ func (f *arenaFillState) allocValue() *Value {
 	v := &f.values[f.valuePos]
 	f.valuePos++
 	v.stringNeedsEscape = false
+	v.noEscapeSubtree = false
 	return v
 }
 
@@ -423,7 +425,9 @@ func (f *arenaFillState) parseValue(s string, depth int) (*Value, string, error)
 			v.s, v.stringNeedsEscape = unescapeStringBestEffortInfo(f.a, raw)
 		} else {
 			v.s = raw
+			v.stringNeedsEscape = hasSpecialChars(raw)
 		}
+		v.noEscapeSubtree = !v.stringNeedsEscape
 		v.a = nil
 		v.o.reset()
 		return v, tail, nil
@@ -447,6 +451,7 @@ func (f *arenaFillState) parseValue(s string, depth int) (*Value, string, error)
 				v := f.allocValue()
 				v.t = TypeNumber
 				v.s = s[:3]
+				v.noEscapeSubtree = true
 				v.a = nil
 				v.o.reset()
 				return v, s[3:], nil
@@ -462,6 +467,7 @@ func (f *arenaFillState) parseValue(s string, depth int) (*Value, string, error)
 		v := f.allocValue()
 		v.t = TypeNumber
 		v.s = ns
+		v.noEscapeSubtree = true
 		v.a = nil
 		v.o.reset()
 		return v, tail, nil
@@ -486,10 +492,12 @@ func (f *arenaFillState) parseArray(s string, depth int) (*Value, string, error)
 	count := f.nextArraySize()
 	if count == 0 {
 		v.a = nil
+		v.noEscapeSubtree = true
 		return v, s[1:], nil
 	}
 
 	v.a = f.allocArrayRefs(count)
+	clean := true
 	for i := 0; i < count; i++ {
 		var err error
 		s = skipWS(s)
@@ -497,11 +505,13 @@ func (f *arenaFillState) parseArray(s string, depth int) (*Value, string, error)
 		if err != nil {
 			return nil, s, errors.New("cannot parse array value: " + err.Error())
 		}
+		clean = clean && valueIsEscapeFree(v.a[i])
 		s = skipWS(s)
 		if i == count-1 {
 			if len(s) == 0 || s[0] != ']' {
 				return nil, s, errParseMissingCloseBracket
 			}
+			v.noEscapeSubtree = clean
 			return v, s[1:], nil
 		}
 		if len(s) == 0 {
@@ -528,10 +538,12 @@ func (f *arenaFillState) parseObject(s string, depth int) (*Value, string, error
 	count := f.nextObjectSize()
 	if count == 0 {
 		v.o.reset()
+		v.noEscapeSubtree = true
 		return v, s[1:], nil
 	}
 
 	v.o.kvs = f.allocObjectRefs(count)
+	clean := true
 	for i := 0; i < count; i++ {
 		var err error
 		entry := f.allocKV()
@@ -560,11 +572,13 @@ func (f *arenaFillState) parseObject(s string, depth int) (*Value, string, error
 		if err != nil {
 			return nil, s, errors.New("cannot parse object value: " + err.Error())
 		}
+		clean = clean && !entry.keyNeedsEscape && valueIsEscapeFree(entry.v)
 		s = skipWS(s)
 		if i == count-1 {
 			if len(s) == 0 || s[0] != '}' {
 				return nil, s, errParseMissingCloseBrace
 			}
+			v.noEscapeSubtree = clean
 			return v, s[1:], nil
 		}
 		if len(s) == 0 {
@@ -580,7 +594,7 @@ func (f *arenaFillState) parseObject(s string, depth int) (*Value, string, error
 
 func (f *arenaFillState) storeString(raw string, hasEscape bool) (string, bool) {
 	if !hasEscape {
-		return raw, false
+		return raw, hasSpecialChars(raw)
 	}
 	n := decodedStringBestEffortLen(raw)
 	var buf []byte
@@ -687,6 +701,18 @@ func decodeStringBestEffort(dst []byte, s string) (int, bool) {
 				break
 			}
 			r := utf16.DecodeRune(rune(x), rune(x1))
+			if r == unicode.ReplacementChar {
+				// Invalid surrogate pair (high surrogate not followed by a
+				// valid low surrogate). Preserve both original \uXXXX escape
+				// sequences instead of collapsing them into a single U+FFFD.
+				write('\\', 'u')
+				writeString(xs)
+				write('\\', 'u')
+				writeString(s[2:6])
+				needsEscape = true
+				s = s[6:]
+				break
+			}
 			var buf [utf8.UTFMax]byte
 			n := utf8.EncodeRune(buf[:], r)
 			write(buf[:n]...)

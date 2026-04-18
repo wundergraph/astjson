@@ -469,14 +469,20 @@ func (f *deepCopyFillState) copyValue(v *Value) *Value {
 	cp.o.reset()
 
 	switch v.t {
-	case TypeString, TypeNumber:
+	case TypeString:
 		cp.s = f.copyString(v.s)
+		cp.noEscapeSubtree = !cp.stringNeedsEscape
+	case TypeNumber:
+		cp.s = f.copyString(v.s)
+		cp.noEscapeSubtree = true
 	case TypeObject:
 		count := f.nextObjectSize()
 		if count == 0 {
+			cp.noEscapeSubtree = true
 			return cp
 		}
 		cp.o.kvs = f.allocObjectRefs(count)
+		clean := true
 		for i, entry := range v.o.kvs {
 			newKV := f.allocKV()
 			newKV.k = f.copyString(entry.k)
@@ -484,16 +490,22 @@ func (f *deepCopyFillState) copyValue(v *Value) *Value {
 			newKV.keyNeedsEscape = entry.keyNeedsEscape
 			newKV.v = f.copyValue(entry.v)
 			cp.o.kvs[i] = newKV
+			clean = clean && !newKV.keyNeedsEscape && valueIsEscapeFree(newKV.v)
 		}
+		cp.noEscapeSubtree = clean
 	case TypeArray:
 		count := f.nextArraySize()
 		if count == 0 {
+			cp.noEscapeSubtree = true
 			return cp
 		}
 		cp.a = f.allocArrayRefs(count)
+		clean := true
 		for i, item := range v.a {
 			cp.a[i] = f.copyValue(item)
+			clean = clean && valueIsEscapeFree(cp.a[i])
 		}
+		cp.noEscapeSubtree = clean
 	}
 
 	return cp
@@ -514,9 +526,11 @@ func (f *deepCopyFillState) structuralCopyValue(v *Value) *Value {
 
 		count := f.nextObjectSize()
 		if count == 0 {
+			cp.noEscapeSubtree = true
 			return cp
 		}
 		cp.o.kvs = f.allocObjectRefs(count)
+		clean := true
 		for i, entry := range v.o.kvs {
 			newKV := f.allocKV()
 			newKV.k = entry.k
@@ -524,7 +538,9 @@ func (f *deepCopyFillState) structuralCopyValue(v *Value) *Value {
 			newKV.keyNeedsEscape = entry.keyNeedsEscape
 			newKV.v = f.structuralCopyValue(entry.v)
 			cp.o.kvs[i] = newKV
+			clean = clean && !newKV.keyNeedsEscape && valueIsEscapeFree(newKV.v)
 		}
+		cp.noEscapeSubtree = clean
 		return cp
 	case TypeArray:
 		cp := f.allocValue()
@@ -535,12 +551,16 @@ func (f *deepCopyFillState) structuralCopyValue(v *Value) *Value {
 
 		count := f.nextArraySize()
 		if count == 0 {
+			cp.noEscapeSubtree = true
 			return cp
 		}
 		cp.a = f.allocArrayRefs(count)
+		clean := true
 		for i, item := range v.a {
 			cp.a[i] = f.structuralCopyValue(item)
+			clean = clean && valueIsEscapeFree(cp.a[i])
 		}
+		cp.noEscapeSubtree = clean
 		return cp
 	default:
 		// Scalars: alias from source. Safe for concurrent reads because
@@ -568,11 +588,13 @@ func (f *deepCopyFillState) structuralCopyWithTransformValue(v *Value, t *Transf
 
 		maxFields := f.nextObjectSize()
 		if maxFields == 0 {
+			cp.noEscapeSubtree = true
 			return cp
 		}
 		refs := f.allocObjectRefs(maxFields)
 
 		n := 0
+		clean := true
 		for i := range t.Entries {
 			child := v.Get(t.Entries[i].InputKey)
 			if child == nil {
@@ -583,7 +605,7 @@ func (f *deepCopyFillState) structuralCopyWithTransformValue(v *Value, t *Transf
 			// [Parser.StructuralCopyWithTransform].
 			newKV.k = f.copyString(t.Entries[i].OutputKey)
 			newKV.keyUnescaped = true
-			newKV.keyNeedsEscape = false
+			newKV.keyNeedsEscape = hasSpecialChars(t.Entries[i].OutputKey)
 			if t.Entries[i].Child != nil {
 				newKV.v = f.structuralCopyWithTransformValue(child, t.Entries[i].Child)
 			} else {
@@ -591,6 +613,7 @@ func (f *deepCopyFillState) structuralCopyWithTransformValue(v *Value, t *Transf
 			}
 			refs[n] = newKV
 			n++
+			clean = clean && !newKV.keyNeedsEscape && valueIsEscapeFree(newKV.v)
 		}
 		if t.Passthrough {
 			// Copy source fields not already handled by Entries.
@@ -627,9 +650,11 @@ func (f *deepCopyFillState) structuralCopyWithTransformValue(v *Value, t *Transf
 				newKV.v = f.structuralCopyValue(entry.v)
 				refs[n] = newKV
 				n++
+				clean = clean && !newKV.keyNeedsEscape && valueIsEscapeFree(newKV.v)
 			}
 		}
 		cp.o.kvs = refs[:n]
+		cp.noEscapeSubtree = clean
 		return cp
 
 	case TypeArray:
@@ -641,18 +666,23 @@ func (f *deepCopyFillState) structuralCopyWithTransformValue(v *Value, t *Transf
 
 		count := f.nextArraySize()
 		if count == 0 {
+			cp.noEscapeSubtree = true
 			return cp
 		}
 		cp.a = f.allocArrayRefs(count)
+		clean := true
 		if t != nil && t.ArrayItem != nil {
 			for i, item := range v.a {
 				cp.a[i] = f.structuralCopyWithTransformValue(item, t.ArrayItem)
+				clean = clean && valueIsEscapeFree(cp.a[i])
 			}
 		} else {
 			for i, item := range v.a {
 				cp.a[i] = f.structuralCopyValue(item)
+				clean = clean && valueIsEscapeFree(cp.a[i])
 			}
 		}
+		cp.noEscapeSubtree = clean
 		return cp
 
 	default:
@@ -674,9 +704,12 @@ func (v *Value) AppendArrayItems(a arena.Arena, right *Value) {
 	if v.t != TypeArray || right.t != TypeArray {
 		return
 	}
+	clean := v.noEscapeSubtree
 	for _, item := range right.a {
 		v.a = arena.SliceAppend(a, v.a, item)
+		clean = clean && valueIsEscapeFree(item)
 	}
+	v.noEscapeSubtree = clean
 }
 
 // ValueIsNull reports whether v is nil or TypeNull.

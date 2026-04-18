@@ -2145,3 +2145,50 @@ func TestUnescapeStringBestEffortInvalidSurrogatePairHex(t *testing.T) {
 	// High surrogate \ud83e followed by \u with invalid hex digits
 	testUnescapeStringBestEffort(t, `\ud83e\uzzzz`, `\ud83e\uzzzz`, true)
 }
+
+// TestParseRawControlByteRoundTrip ensures that values and keys containing
+// raw control bytes (no backslash escape) still set stringNeedsEscape /
+// keyNeedsEscape so MarshalTo emits valid JSON.
+func TestParseRawControlByteRoundTrip(t *testing.T) {
+	// Literal newline inside string, no backslash — parser tolerates it,
+	// but MarshalTo must re-escape it.
+	input := "{\"k\x01ey\":\"val\nue\"}"
+	expected := `{"k\u0001ey":"val\nue"}`
+
+	t.Run("heap", func(t *testing.T) {
+		var p Parser
+		v, err := p.Parse(input)
+		if err != nil {
+			t.Fatalf("Parse: %s", err)
+		}
+		got := string(v.MarshalTo(nil))
+		if got != expected {
+			t.Fatalf("got %q; want %q", got, expected)
+		}
+	})
+
+	t.Run("two_pass_arena", func(t *testing.T) {
+		a := arena.NewMonotonicArena()
+		var p Parser
+		v, err := p.ParseWithArena(a, input)
+		if err != nil {
+			t.Fatalf("ParseWithArena: %s", err)
+		}
+		got := string(v.MarshalTo(nil))
+		if got != expected {
+			t.Fatalf("got %q; want %q", got, expected)
+		}
+	})
+}
+
+// TestUnescapeInvalidSurrogatePair ensures that a high surrogate followed by
+// a second \uXXXX that is not a valid low surrogate preserves both original
+// escape sequences instead of collapsing into a single U+FFFD replacement.
+func TestUnescapeInvalidSurrogatePair(t *testing.T) {
+	// High surrogate \ud83e followed by another high surrogate \ud83e —
+	// not a valid pair. Must not lose data by collapsing to U+FFFD.
+	testUnescapeStringBestEffort(t, `\ud83e\ud83e`, `\ud83e\ud83e`, true)
+	// High surrogate followed by a BMP code unit outside the low-surrogate
+	// range.
+	testUnescapeStringBestEffort(t, `\ud83e\u1234`, `\ud83e\u1234`, true)
+}

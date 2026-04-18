@@ -364,11 +364,16 @@ func BenchmarkMergeValuesOnly(b *testing.B) {
 	}
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
-			av := MustParse(tc.a)
-			bv := MustParse(tc.b)
+			// MergeValues mutates its left-hand input for object/array cases,
+			// so re-parse fresh inputs each iteration (excluded from timing)
+			// to keep the benchmark measuring only the merge cost.
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				av := MustParse(tc.a)
+				bv := MustParse(tc.b)
+				b.StartTimer()
 				merged, err := MergeValues(nil, av, bv)
 				if err != nil {
 					b.Fatal(err)
@@ -392,6 +397,9 @@ func BenchmarkObjectGetBunchFields(b *testing.B) {
 	o := v.GetObject()
 	if o == nil {
 		b.Fatal("expected object")
+	}
+	if len(o.kvs) == 0 {
+		b.Fatal("expected object with at least one key")
 	}
 	// Pick a key from the middle of the object.
 	middleKey := o.kvs[len(o.kvs)/2].k

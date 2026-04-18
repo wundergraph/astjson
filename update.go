@@ -59,11 +59,11 @@ func (o *Object) Set(a arena.Arena, key string, value *Value) {
 		value = valueNull
 	}
 
-	// Try substituting already existing entry with the given key.
+	// Try substituting already existing entry with the given key. Keys are
+	// pre-unescaped by all in-tree producers (parsers, mutation APIs), so
+	// direct comparison is sufficient. Hand-constructed kvs with
+	// keyUnescaped == false are not supported here.
 	for i := range o.kvs {
-		if !o.kvs[i].keyUnescaped {
-			o.unescapeKey(a, o.kvs[i])
-		}
 		if o.kvs[i].k == key {
 			o.kvs[i].v = value
 			return
@@ -81,12 +81,19 @@ func (o *Object) Set(a arena.Arena, key string, value *Value) {
 // Set sets (key, value) entry in the array or object v.
 //
 // The value must be unchanged during v lifetime.
+//
+// Updates v.noEscapeSubtree: stays true only if it was already true AND the
+// new key and value are both escape-free. Does not walk ancestors; callers
+// who mutate through a sub-handle of a larger tree must call
+// [Value.RecomputeEscapeHint] on the root if they want an accurate hint
+// there.
 func (v *Value) Set(a arena.Arena, key string, value *Value) {
 	if v == nil {
 		return
 	}
 	if v.t == TypeObject {
 		v.o.Set(a, key, value)
+		v.noEscapeSubtree = v.noEscapeSubtree && !hasSpecialChars(key) && valueIsEscapeFree(value)
 		return
 	}
 	if v.t == TypeArray {
@@ -106,6 +113,9 @@ func (v *Value) Set(a arena.Arena, key string, value *Value) {
 // arena-allocated from the same arena, or be a package-level singleton.
 // Use [Parser.DeepCopy] to copy a heap-allocated value onto the arena before passing
 // it here. See the package documentation section "Mixing Arena and Heap Values".
+//
+// Updates v.noEscapeSubtree: stays true only if it was already true AND the
+// inserted value is escape-free. See [Value.Set] for the ancestor caveat.
 func (v *Value) SetArrayItem(a arena.Arena, idx int, value *Value) {
 	if v == nil || v.t != TypeArray {
 		return
@@ -114,4 +124,5 @@ func (v *Value) SetArrayItem(a arena.Arena, idx int, value *Value) {
 		v.a = arena.SliceAppend(a, v.a, valueNull)
 	}
 	v.a[idx] = value
+	v.noEscapeSubtree = v.noEscapeSubtree && valueIsEscapeFree(value)
 }

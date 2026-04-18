@@ -3,6 +3,7 @@ package astjson
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wundergraph/go-arena"
@@ -130,6 +131,44 @@ func TestParserArenaPlannerScratchReuse(t *testing.T) {
 	}
 	if cap(parser.arenaScratch.stringSpans) != valueStringCap {
 		t.Fatalf("string span scratch capacity changed: got %d want %d", cap(parser.arenaScratch.stringSpans), valueStringCap)
+	}
+}
+
+func TestParserArenaScratchCapBound(t *testing.T) {
+	// A single outlier parse must not leave the scratch permanently bloated.
+	// Build a JSON array with more string elements than maxArenaScratchCap so
+	// the planner's stringSpans slice grows above the bound, then verify the
+	// next parse trims it.
+	const n = maxArenaScratchCap + 500
+
+	var b strings.Builder
+	b.WriteByte('[')
+	for i := range n {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`"x"`)
+	}
+	b.WriteByte(']')
+	large := b.String()
+
+	var parser Parser
+	a := arena.NewMonotonicArena()
+
+	if _, err := parser.ParseBytesWithArena(a, []byte(large)); err != nil {
+		t.Fatalf("outlier parse failed: %v", err)
+	}
+	if cap(parser.arenaScratch.stringSpans) <= maxArenaScratchCap {
+		t.Fatalf("expected outlier to grow stringSpans above %d (got %d)",
+			maxArenaScratchCap, cap(parser.arenaScratch.stringSpans))
+	}
+
+	a.Reset()
+	if _, err := parser.ParseBytesWithArena(a, []byte(`{"x":1}`)); err != nil {
+		t.Fatalf("follow-up parse failed: %v", err)
+	}
+	if c := cap(parser.arenaScratch.stringSpans); c > maxArenaScratchCap {
+		t.Fatalf("stringSpans cap not trimmed: got %d want <= %d", c, maxArenaScratchCap)
 	}
 }
 

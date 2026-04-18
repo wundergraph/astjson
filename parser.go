@@ -47,14 +47,41 @@ type Parser struct {
 	arenaScratch *arenaPlanScratch
 }
 
+// maxArenaScratchCap bounds the capacity of the planner scratch buffers
+// retained on a Parser between parses. A single outlier parse can grow these
+// slices to the size of the largest document seen; without a cap, a pooled
+// or long-lived Parser would permanently hold that peak capacity. Any buffer
+// whose cap exceeds this bound is reallocated at the start of the next parse.
+const maxArenaScratchCap = 4096
+
 func (p *Parser) ensureArenaScratch() *arenaPlanScratch {
 	if p == nil {
 		return nil
 	}
 	if p.arenaScratch == nil {
 		p.arenaScratch = &arenaPlanScratch{}
+		return p.arenaScratch
 	}
-	return p.arenaScratch
+	s := p.arenaScratch
+	capBoundInts(&s.objectSizes)
+	capBoundInts(&s.arraySizes)
+	capBoundSpans(&s.keySpans)
+	capBoundSpans(&s.stringSpans)
+	capBoundInts(&s.deepCopyObjectSizes)
+	capBoundInts(&s.deepCopyArraySizes)
+	return s
+}
+
+func capBoundInts(b *[]int) {
+	if cap(*b) > maxArenaScratchCap {
+		*b = make([]int, 0, maxArenaScratchCap)
+	}
+}
+
+func capBoundSpans(b *[]arenaStringSpan) {
+	if cap(*b) > maxArenaScratchCap {
+		*b = make([]arenaStringSpan, 0, maxArenaScratchCap)
+	}
 }
 
 // Parse parses s containing JSON.
@@ -182,7 +209,9 @@ func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 			v.s, v.stringNeedsEscape = unescapeStringBestEffortInfo(a, ss)
 		} else {
 			v.s = ss
+			v.stringNeedsEscape = hasSpecialChars(ss)
 		}
+		v.noEscapeSubtree = !v.stringNeedsEscape
 		return v, tail, nil
 	case '{':
 		// Object - very common
@@ -218,6 +247,7 @@ func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 				v := arena.Allocate[Value](a)
 				v.t = TypeNumber
 				v.s = s[:3]
+				v.noEscapeSubtree = true
 				return v, s[3:], nil
 			}
 			return nil, s, errors.New("unexpected value found: " + strconv.Quote(s))
@@ -232,6 +262,7 @@ func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 		v := arena.Allocate[Value](a)
 		v.t = TypeNumber
 		v.s = ns
+		v.noEscapeSubtree = true
 		return v, tail, nil
 	}
 }
@@ -246,12 +277,14 @@ func parseArray(a arena.Arena, s string, depth int) (*Value, string, error) {
 		v := arena.Allocate[Value](a)
 		v.t = TypeArray
 		v.a = v.a[:0]
+		v.noEscapeSubtree = true
 		return v, s[1:], nil
 	}
 
 	arr := arena.Allocate[Value](a)
 	arr.t = TypeArray
 	arr.a = arr.a[:0]
+	clean := true
 	for {
 		var v *Value
 		var err error
@@ -267,6 +300,7 @@ func parseArray(a arena.Arena, s string, depth int) (*Value, string, error) {
 		} else {
 			arr.a = arena.SliceAppend(a, arr.a, v)
 		}
+		clean = clean && valueIsEscapeFree(v)
 
 		s = skipWS(s)
 		if len(s) == 0 {
@@ -278,6 +312,7 @@ func parseArray(a arena.Arena, s string, depth int) (*Value, string, error) {
 		}
 		if s[0] == ']' {
 			s = s[1:]
+			arr.noEscapeSubtree = clean
 			return arr, s, nil
 		}
 		return nil, s, errParseMissingCommaArray
@@ -294,12 +329,14 @@ func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 		v := arena.Allocate[Value](a)
 		v.t = TypeObject
 		v.o.reset()
+		v.noEscapeSubtree = true
 		return v, s[1:], nil
 	}
 
 	o := arena.Allocate[Value](a)
 	o.t = TypeObject
 	o.o.reset()
+	clean := true
 	for {
 		var err error
 		kv := o.o.getKV(a)
@@ -316,6 +353,8 @@ func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 		}
 		if keyHasEscape {
 			kv.k, kv.keyNeedsEscape = unescapeStringBestEffortInfo(a, kv.k)
+		} else {
+			kv.keyNeedsEscape = hasSpecialChars(kv.k)
 		}
 		kv.keyUnescaped = true
 		s = skipWS(s)
@@ -330,6 +369,7 @@ func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 		if err != nil {
 			return nil, s, errors.New("cannot parse object value: " + err.Error())
 		}
+		clean = clean && !kv.keyNeedsEscape && valueIsEscapeFree(kv.v)
 		s = skipWS(s)
 		if len(s) == 0 {
 			return nil, s, errParseUnexpectedEndObject
@@ -339,6 +379,7 @@ func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 			continue
 		}
 		if s[0] == '}' {
+			o.noEscapeSubtree = clean
 			return o, s[1:], nil
 		}
 		return nil, s, errParseMissingCommaObject
@@ -353,6 +394,56 @@ func appendQuotedString(dst []byte, s string, needsEscape bool) []byte {
 		return dst
 	}
 	return escapeStringSlowPath(dst, s)
+}
+
+// valueIsEscapeFree reports whether v contributes no escape-requiring
+// content to an enclosing container's noEscapeSubtree aggregate. For
+// TypeString this means the decoded string does not need escaping; for
+// containers it relies on their noEscapeSubtree flag; scalars without a
+// payload (true/false/null/number) never contribute and return true.
+func valueIsEscapeFree(v *Value) bool {
+	if v == nil {
+		return true
+	}
+	switch v.t {
+	case TypeString:
+		return !v.stringNeedsEscape
+	case TypeObject, TypeArray:
+		return v.noEscapeSubtree
+	default:
+		return true
+	}
+}
+
+// RecomputeEscapeHint walks v bottom-up and refreshes the noEscapeSubtree
+// flag from the current state of keys and string values. Call this after
+// mutating through a sub-handle of a larger tree if you plan to rely on
+// the hint at a higher level — mutation APIs only update the flag on the
+// directly-mutated node and cannot invalidate ancestors.
+func (v *Value) RecomputeEscapeHint() bool {
+	if v == nil {
+		return true
+	}
+	switch v.t {
+	case TypeString:
+		v.noEscapeSubtree = !v.stringNeedsEscape
+	case TypeObject:
+		clean := true
+		for _, kv := range v.o.kvs {
+			childClean := kv.v.RecomputeEscapeHint()
+			clean = clean && !kv.keyNeedsEscape && childClean
+		}
+		v.noEscapeSubtree = clean
+	case TypeArray:
+		clean := true
+		for _, item := range v.a {
+			clean = clean && item.RecomputeEscapeHint()
+		}
+		v.noEscapeSubtree = clean
+	default:
+		v.noEscapeSubtree = true
+	}
+	return v.noEscapeSubtree
 }
 
 func hasSpecialChars(s string) bool {
@@ -537,6 +628,24 @@ func (o *Object) MarshalTo(dst []byte) []byte {
 	return dst
 }
 
+// marshalToClean is a MarshalTo fast path that assumes the entire subtree
+// is escape-free. Only called from contexts where the caller has verified
+// (via the noEscapeSubtree hint) that no key or string needs escaping.
+// Descendants are also assumed clean; no per-node re-check is performed.
+func (o *Object) marshalToClean(dst []byte) []byte {
+	dst = append(dst, '{')
+	for i, kv := range o.kvs {
+		dst = append(dst, '"')
+		dst = append(dst, kv.k...)
+		dst = append(dst, '"', ':')
+		dst = kv.v.marshalToClean(dst)
+		if i != len(o.kvs)-1 {
+			dst = append(dst, ',')
+		}
+	}
+	return append(dst, '}')
+}
+
 // String returns string representation for the o.
 //
 // This function is for debugging purposes only. It isn't optimized for speed.
@@ -612,13 +721,27 @@ func (o *Object) Visit(f func(key []byte, v *Value)) {
 type Value struct {
 	t                 Type // HOT: accessed on every operation
 	stringNeedsEscape bool // TypeString only: decoded string needs escaping on marshal
-	s                 string
-	a                 []*Value
-	o                 Object
+	// noEscapeSubtree is an advisory hint: when true, no key or string value
+	// in this subtree required JSON escaping at the time of parse or the last
+	// call to RecomputeEscapeHint. false is always safe; consumers that fast
+	// path on true must tolerate stale-true on ancestors of mutations made
+	// through a sub-handle. See MUTATION CORRECTNESS in package docs.
+	noEscapeSubtree bool
+	s               string
+	a               []*Value
+	o               Object
 }
 
 // MarshalTo appends marshaled v to dst and returns the result.
 func (v *Value) MarshalTo(dst []byte) []byte {
+	// Fast path: if the entire subtree is known to be escape-free, emit
+	// each string/key literally without per-node escape checks. The hint
+	// is advisory — callers who mutate through a sub-handle and want the
+	// root hint to stay accurate must call [Value.RecomputeEscapeHint].
+	if v.noEscapeSubtree && (v.t == TypeObject || v.t == TypeArray || v.t == TypeString) {
+		v.debugVerifyEscapeHint()
+		return v.marshalToClean(dst)
+	}
 	switch v.t {
 	case TypeObject:
 		return v.o.MarshalTo(dst)
@@ -634,6 +757,39 @@ func (v *Value) MarshalTo(dst []byte) []byte {
 		return dst
 	case TypeString:
 		return appendQuotedString(dst, v.s, v.stringNeedsEscape)
+	case TypeNumber:
+		return append(dst, v.s...)
+	case TypeTrue:
+		return append(dst, "true"...)
+	case TypeFalse:
+		return append(dst, "false"...)
+	case TypeNull:
+		return append(dst, "null"...)
+	default:
+		panic("BUG: unexpected Value type: " + strconv.Itoa(int(v.t)))
+	}
+}
+
+// marshalToClean is a MarshalTo fast path for escape-free subtrees. See
+// [Object.marshalToClean] for the contract; this method assumes the caller
+// has already verified v.noEscapeSubtree at the entry point.
+func (v *Value) marshalToClean(dst []byte) []byte {
+	switch v.t {
+	case TypeObject:
+		return v.o.marshalToClean(dst)
+	case TypeArray:
+		dst = append(dst, '[')
+		for i, vv := range v.a {
+			dst = vv.marshalToClean(dst)
+			if i != len(v.a)-1 {
+				dst = append(dst, ',')
+			}
+		}
+		return append(dst, ']')
+	case TypeString:
+		dst = append(dst, '"')
+		dst = append(dst, v.s...)
+		return append(dst, '"')
 	case TypeNumber:
 		return append(dst, v.s...)
 	case TypeTrue:
@@ -989,7 +1145,7 @@ func (v *Value) Bool() (bool, error) {
 }
 
 var (
-	valueTrue  = &Value{t: TypeTrue}
-	valueFalse = &Value{t: TypeFalse}
-	valueNull  = &Value{t: TypeNull}
+	valueTrue  = &Value{t: TypeTrue, noEscapeSubtree: true}
+	valueFalse = &Value{t: TypeFalse, noEscapeSubtree: true}
+	valueNull  = &Value{t: TypeNull, noEscapeSubtree: true}
 )
