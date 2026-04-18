@@ -9,6 +9,10 @@ import (
 // BenchmarkMarshalCleanFastPath measures MarshalTo on an escape-free
 // payload (the small.json fixture) with the noEscapeSubtree fast path
 // enabled vs. disabled.
+//
+// The "slow" variant recursively clears noEscapeSubtree on every node so
+// no level takes its own fast path — an honest comparison against the
+// per-node escape-check path.
 func BenchmarkMarshalCleanFastPath(b *testing.B) {
 	payload, err := os.ReadFile(filepath.Join("testdata", "small.json"))
 	if err != nil {
@@ -32,14 +36,32 @@ func BenchmarkMarshalCleanFastPath(b *testing.B) {
 		}
 	})
 	b.Run("slow", func(b *testing.B) {
+		clearNoEscapeSubtreeRecursive(v)
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			// Force slow path by clearing the flag on every iteration's entry.
-			v.noEscapeSubtree = false
 			dst = v.MarshalTo(dst[:0])
 		}
-		// Restore for other benchmarks.
+		b.StopTimer()
 		v.RecomputeEscapeHint()
 	})
+}
+
+// clearNoEscapeSubtreeRecursive disables the fast path on every node of v's
+// subtree, forcing MarshalTo onto the per-node escape-check path.
+func clearNoEscapeSubtreeRecursive(v *Value) {
+	if v == nil {
+		return
+	}
+	v.noEscapeSubtree = false
+	switch v.Type() {
+	case TypeObject:
+		for _, kv := range v.o.kvs {
+			clearNoEscapeSubtreeRecursive(kv.v)
+		}
+	case TypeArray:
+		for _, item := range v.a {
+			clearNoEscapeSubtreeRecursive(item)
+		}
+	}
 }

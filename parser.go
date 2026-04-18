@@ -628,17 +628,19 @@ func (o *Object) MarshalTo(dst []byte) []byte {
 	return dst
 }
 
-// marshalToClean is a MarshalTo fast path that assumes the entire subtree
-// is escape-free. Only called from contexts where the caller has verified
-// (via the noEscapeSubtree hint) that no key or string needs escaping.
-// Descendants are also assumed clean; no per-node re-check is performed.
+// marshalToClean is a MarshalTo fast path for objects whose own keys are
+// all escape-free. It skips the per-key escape check for THIS object, but
+// recurses into children via [Value.MarshalTo] so each child re-checks
+// its own noEscapeSubtree flag. That way a stale-true ancestor hint
+// (left behind by mutation through a sub-handle) cannot cause a dirty
+// descendant to be written out unescaped.
 func (o *Object) marshalToClean(dst []byte) []byte {
 	dst = append(dst, '{')
 	for i, kv := range o.kvs {
 		dst = append(dst, '"')
 		dst = append(dst, kv.k...)
 		dst = append(dst, '"', ':')
-		dst = kv.v.marshalToClean(dst)
+		dst = kv.v.MarshalTo(dst)
 		if i != len(o.kvs)-1 {
 			dst = append(dst, ',')
 		}
@@ -663,13 +665,6 @@ func (o *Object) getKV(a arena.Arena) *kv {
 	}
 	o.kvs = arena.SliceAppend(a, o.kvs, arena.Allocate[kv](a))
 	return o.kvs[len(o.kvs)-1]
-}
-
-// unescapeKey unescapes a specific key.
-// Callers must check kv.keyUnescaped before calling.
-func (o *Object) unescapeKey(a arena.Arena, kv *kv) {
-	kv.k, kv.keyNeedsEscape = unescapeStringBestEffortInfo(a, kv.k)
-	kv.keyUnescaped = true
 }
 
 // Len returns the number of items in the o.
@@ -770,9 +765,10 @@ func (v *Value) MarshalTo(dst []byte) []byte {
 	}
 }
 
-// marshalToClean is a MarshalTo fast path for escape-free subtrees. See
-// [Object.marshalToClean] for the contract; this method assumes the caller
-// has already verified v.noEscapeSubtree at the entry point.
+// marshalToClean is a MarshalTo fast path for this node's own keys/string;
+// see [Object.marshalToClean] for the ancestor-stale rationale. Children of
+// objects and arrays are emitted via their own [Value.MarshalTo] so each
+// subtree re-checks its own hint.
 func (v *Value) marshalToClean(dst []byte) []byte {
 	switch v.t {
 	case TypeObject:
@@ -780,7 +776,7 @@ func (v *Value) marshalToClean(dst []byte) []byte {
 	case TypeArray:
 		dst = append(dst, '[')
 		for i, vv := range v.a {
-			dst = vv.marshalToClean(dst)
+			dst = vv.MarshalTo(dst)
 			if i != len(v.a)-1 {
 				dst = append(dst, ',')
 			}

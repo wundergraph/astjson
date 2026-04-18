@@ -395,10 +395,7 @@ func BenchmarkObjectGetBunchFields(b *testing.B) {
 		b.Fatal(err)
 	}
 	o := v.GetObject()
-	if o == nil {
-		b.Fatal("expected object")
-	}
-	if len(o.kvs) == 0 {
+	if o == nil || len(o.kvs) == 0 {
 		b.Fatal("expected object with at least one key")
 	}
 	// Pick a key from the middle of the object.
