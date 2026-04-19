@@ -223,6 +223,103 @@ func TestStructuralCopyWithTransformHeapAliasesScalars(t *testing.T) {
 	require.Same(t, src.Get("a"), cp.Get("alpha"))
 }
 
+// TestDeepCopyWithTransformPassthroughCollision covers the case where a
+// rename's OutputKey also exists as a source field. The passthrough pass
+// must drop that source field (rename-wins) AND the planner must not
+// over-reserve slab positions for it — otherwise sibling subtrees read
+// misaligned objectSizes/arraySizes and panic.
+func TestDeepCopyWithTransformPassthroughCollision(t *testing.T) {
+	// Case A: simple collision at a single object level.
+	t.Run("simple", func(t *testing.T) {
+		src := MustParse(`{"a":{"x":1},"b":{"y":2},"c":3}`)
+		xform := &Transform{
+			Entries:     []TransformEntry{{InputKey: "a", OutputKey: "b"}},
+			Passthrough: true,
+		}
+		expected := `{"b":{"x":1},"c":3}`
+		// Heap.
+		cpHeap := DeepCopyWithTransform(nil, src, xform)
+		require.Equal(t, expected, string(cpHeap.MarshalTo(nil)))
+		// Arena.
+		a := arena.NewMonotonicArena()
+		var p Parser
+		srcA, err := p.ParseWithArena(a, `{"a":{"x":1},"b":{"y":2},"c":3}`)
+		require.NoError(t, err)
+		cpArena := DeepCopyWithTransform(a, srcA, xform)
+		require.Equal(t, expected, string(cpArena.MarshalTo(nil)))
+	})
+
+	// Case B: collision inside a nested child transform, with a sibling
+	// under the outer object. This is the exact scenario codex flagged:
+	// the dropped passthrough subtree used to leave objectSizes entries
+	// that misaligned the sibling copy.
+	t.Run("nested_with_sibling", func(t *testing.T) {
+		input := `{"x":{"a":{"aa":1},"b":{"drop":1},"c":{"w1":1,"w2":2,"w3":3}},"y":{"later1":1,"later2":2}}`
+		xform := &Transform{
+			Entries: []TransformEntry{
+				{
+					InputKey: "x", OutputKey: "x",
+					Child: &Transform{
+						Entries:     []TransformEntry{{InputKey: "a", OutputKey: "b"}},
+						Passthrough: true,
+					},
+				},
+				{InputKey: "y", OutputKey: "y"},
+			},
+		}
+		// Dropped: x.b (collides with emitted x.b from x.a rename).
+		// Preserved via passthrough: x.c.
+		// Sibling y fully deep-copied.
+		expected := `{"x":{"b":{"aa":1},"c":{"w1":1,"w2":2,"w3":3}},"y":{"later1":1,"later2":2}}`
+		t.Run("heap", func(t *testing.T) {
+			src := MustParse(input)
+			cp := DeepCopyWithTransform(nil, src, xform)
+			require.Equal(t, expected, string(cp.MarshalTo(nil)))
+		})
+		t.Run("arena", func(t *testing.T) {
+			a := arena.NewMonotonicArena()
+			var p Parser
+			src, err := p.ParseWithArena(a, input)
+			require.NoError(t, err)
+			cp := DeepCopyWithTransform(a, src, xform)
+			require.Equal(t, expected, string(cp.MarshalTo(nil)))
+		})
+	})
+}
+
+// TestStructuralCopyWithTransformPassthroughCollision mirrors the above for
+// the structural copy path; the same planner-vs-fill mismatch existed
+// there before the fix.
+func TestStructuralCopyWithTransformPassthroughCollision(t *testing.T) {
+	input := `{"x":{"a":{"aa":1},"b":{"drop":1},"c":{"w1":1,"w2":2,"w3":3}},"y":{"later1":1,"later2":2}}`
+	xform := &Transform{
+		Entries: []TransformEntry{
+			{
+				InputKey: "x", OutputKey: "x",
+				Child: &Transform{
+					Entries:     []TransformEntry{{InputKey: "a", OutputKey: "b"}},
+					Passthrough: true,
+				},
+			},
+			{InputKey: "y", OutputKey: "y"},
+		},
+	}
+	expected := `{"x":{"b":{"aa":1},"c":{"w1":1,"w2":2,"w3":3}},"y":{"later1":1,"later2":2}}`
+	t.Run("heap", func(t *testing.T) {
+		src := MustParse(input)
+		cp := StructuralCopyWithTransform(nil, src, xform)
+		require.Equal(t, expected, string(cp.MarshalTo(nil)))
+	})
+	t.Run("arena", func(t *testing.T) {
+		a := arena.NewMonotonicArena()
+		var p Parser
+		src, err := p.ParseWithArena(a, input)
+		require.NoError(t, err)
+		cp := StructuralCopyWithTransform(a, src, xform)
+		require.Equal(t, expected, string(cp.MarshalTo(nil)))
+	})
+}
+
 // TestPackageLevelParity ensures the package-level funcs produce byte-
 // identical output to the Parser methods for a representative fixture —
 // they must share internals.

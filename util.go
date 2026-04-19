@@ -335,14 +335,7 @@ func countDeepCopyWithTransformValue(plan *deepCopyPlan, v *Value, t *Transform)
 		}
 		if t.Passthrough {
 			for _, entry := range v.o.kvs {
-				handled := false
-				for j := range t.Entries {
-					if entry.k == t.Entries[j].InputKey {
-						handled = true
-						break
-					}
-				}
-				if handled {
+				if passthroughSkipped(v, entry.k, t) {
 					continue
 				}
 				plan.stringBytes += len(entry.k)
@@ -368,6 +361,30 @@ func countDeepCopyWithTransformValue(plan *deepCopyPlan, v *Value, t *Transform)
 		// Scalar: transforms do not apply; count as plain deep copy.
 		countDeepCopyValue(plan, v)
 	}
+}
+
+// passthroughSkipped reports whether a source field key should be dropped
+// during a transform's Passthrough pass — either because it matches an
+// Entries InputKey (the rename owns that field) or because it collides
+// with an OutputKey that an Entry would actually emit (rename-wins on
+// collision). Both planner and fill must agree on this predicate, otherwise
+// plan counts drift from fill consumption and subsequent sibling nodes
+// read misaligned objectSizes / arraySizes.
+func passthroughSkipped(src *Value, key string, t *Transform) bool {
+	for i := range t.Entries {
+		if key == t.Entries[i].InputKey {
+			return true
+		}
+	}
+	for i := range t.Entries {
+		if key != t.Entries[i].OutputKey {
+			continue
+		}
+		if src.Get(t.Entries[i].InputKey) != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func countStructuralCopyWithTransformValue(plan *deepCopyPlan, v *Value, t *Transform) {
@@ -406,8 +423,15 @@ func countStructuralCopyWithTransformValue(plan *deepCopyPlan, v *Value, t *Tran
 			}
 		}
 		if t.Passthrough {
-			// Passthrough fields are structurally copied verbatim.
+			// Passthrough fields are structurally copied verbatim, except
+			// for fields that rename-collide with an emitted OutputKey or
+			// shadow an InputKey already handled above. See
+			// [passthroughSkipped] for why the predicate must match the
+			// fill's skip logic.
 			for _, entry := range v.o.kvs {
+				if passthroughSkipped(v, entry.k, t) {
+					continue
+				}
 				countStructuralCopyValue(plan, entry.v)
 			}
 		}
