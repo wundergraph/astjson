@@ -342,9 +342,11 @@ resetting one arena while the other is still in use causes silent corruption.
   * **One arena per unit of work.** Create an arena at the start of a request,
     parse and build values on it, serialize the result, then let the arena be
     collected. This gives you a clear, bounded lifetime.
-  * **Use `parser.DeepCopy` at boundaries.** When inserting a value from an unknown
+  * **Use `astjson.DeepCopy` at boundaries.** When inserting a value from an unknown
     source (different arena, heap, parsed separately) into an arena container,
-    wrap it in `parser.DeepCopy(a, val)`. This is a no-op when `a` is nil.
+    wrap it in `astjson.DeepCopy(a, val)`. The copy is always independent —
+    with a non-nil arena it is arena-allocated; with a nil arena it is
+    heap-allocated.
   * **Prefer arena mode for hot paths.** Arena mode avoids per-Value heap
     allocations, reducing GC pause time in high-throughput services.
   * **Use heap mode for simplicity.** If GC pressure is not a concern, pass

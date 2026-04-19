@@ -1301,14 +1301,23 @@ func TestArenaGCSafety_DeepCopy_NestedObject(t *testing.T) {
 	}
 }
 
-// TestArenaGCSafety_DeepCopy_NilArena verifies that parser.DeepCopy(nil, v) is a
-// no-op and returns v unchanged.
+// TestArenaGCSafety_DeepCopy_NilArena verifies that parser.DeepCopy(nil, v)
+// produces an independent heap-allocated deep copy — mutating the copy must
+// not affect the source.
 func TestArenaGCSafety_DeepCopy_NilArena(t *testing.T) {
-	v := StringValue(nil, "hello")
+	src := MustParse(`{"key":"value"}`)
 	var parser Parser
-	got := parser.DeepCopy(nil, v)
-	if got != v {
-		t.Fatal("parser.DeepCopy(nil, v) must return v unchanged")
+	cp := parser.DeepCopy(nil, src)
+	if cp == src {
+		t.Fatal("DeepCopy(nil, v) must not return the same pointer")
+	}
+	// Mutate the copy — source must be untouched.
+	cp.Set(nil, "key", StringValue(nil, "mutated"))
+	if string(src.MarshalTo(nil)) != `{"key":"value"}` {
+		t.Fatalf("source mutated by copy; source=%s", src.MarshalTo(nil))
+	}
+	if string(cp.MarshalTo(nil)) != `{"key":"mutated"}` {
+		t.Fatalf("copy mutation did not stick; copy=%s", cp.MarshalTo(nil))
 	}
 }
 

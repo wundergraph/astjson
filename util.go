@@ -1,6 +1,8 @@
 package astjson
 
 import (
+	"strings"
+	"sync"
 	"unsafe"
 
 	"github.com/wundergraph/go-arena"
@@ -97,10 +99,10 @@ func ValueIsNonNull(v *Value) bool {
 	return true
 }
 
-// DeepCopy returns a deep copy of v allocated on arena a.
-// All string data, slice backing arrays, object keys, and non-literal child
-// Values are arena-allocated, making the result self-contained within a except
-// for the immutable package-level singleton nodes used for true, false, and null.
+// DeepCopy returns a fully independent deep copy of v. When a is non-nil the
+// copy is allocated on the arena; when a is nil the copy is heap-allocated.
+// In both cases the returned tree shares no mutable memory with v — scalar
+// string payloads are cloned onto the destination.
 //
 // Use Parser.DeepCopy when inserting a heap-parsed *Value into an arena-allocated
 // container (via [Object.Set], [Value.SetArrayItem], [AppendArrayItems], etc.)
@@ -111,34 +113,61 @@ func ValueIsNonNull(v *Value) bool {
 //	heapVal, _ := Parse(`"hello"`)                       // heap-allocated
 //	arenaObj.Set(a, "key", parser.DeepCopy(a, heapVal))  // safe: copy lives in a
 //
-// When a is nil (heap mode), Parser.DeepCopy returns v unchanged. In heap mode the GC
-// traces all references normally, so no copy is needed.
+// Prefer the package-level [DeepCopy] for ad-hoc calls; Parser.DeepCopy is
+// the same API without the pool mutex, for callers already holding a Parser.
+//
+// Returns nil when v is nil. The immutable singletons (valueTrue, valueFalse,
+// valueNull) are shared rather than cloned.
 func (p *Parser) DeepCopy(a arena.Arena, v *Value) *Value {
-	if v == nil || a == nil {
-		return v
+	if v == nil {
+		return nil
 	}
-
+	if a == nil {
+		return copyValueHeap(v)
+	}
 	scratch := p.ensureArenaScratch()
 	plan := planDeepCopyWithScratch(v, scratch)
 	state := newDeepCopyFillState(a, plan)
 	return state.copyValue(v)
 }
 
-// StructuralCopy clones only the container structure of v onto arena a.
-// Object and array nodes are reallocated on a, while all leaf nodes and object
-// key strings are aliased from the source tree unchanged.
+// DeepCopyWithTransform is the transform-aware variant of [Parser.DeepCopy].
+// Fields are renamed or filtered per t while every scalar payload surviving
+// the transform is deep-copied. See [Transform] for t semantics.
+//
+// When t is nil, behaves identically to [Parser.DeepCopy].
+func (p *Parser) DeepCopyWithTransform(a arena.Arena, v *Value, t *Transform) *Value {
+	if v == nil {
+		return nil
+	}
+	if t == nil {
+		return p.DeepCopy(a, v)
+	}
+	if a == nil {
+		return copyValueHeapWithTransform(v, t)
+	}
+	scratch := p.ensureArenaScratch()
+	plan := planDeepCopyWithTransformScratch(v, t, scratch)
+	state := newDeepCopyFillState(a, plan)
+	return state.deepCopyWithTransformValue(v, t)
+}
+
+// StructuralCopy clones only the container structure of v. Object and array
+// nodes are freshly allocated (on a when non-nil, else on the heap) while
+// scalar leaves (strings, numbers, bools, nulls) and object key strings are
+// aliased from the source tree unchanged.
 //
 // This is intended for trees whose leaves already have the same lifetime as the
 // cloned structure, typically when both source and destination are used within
 // the same request and reset together. It is not a safe replacement for
 // DeepCopy when moving heap-allocated leaves into arena-owned containers.
-//
-// When a is nil (heap mode), StructuralCopy returns v unchanged.
 func (p *Parser) StructuralCopy(a arena.Arena, v *Value) *Value {
-	if v == nil || a == nil {
-		return v
+	if v == nil {
+		return nil
 	}
-
+	if a == nil {
+		return structuralCopyValueHeap(v)
+	}
 	scratch := p.ensureArenaScratch()
 	plan := planStructuralCopyWithScratch(v, scratch)
 	state := newDeepCopyFillState(a, plan)
@@ -160,13 +189,15 @@ func (p *Parser) StructuralCopy(a arena.Arena, v *Value) *Value {
 // When t is nil, behaves identically to [Parser.StructuralCopy].
 // When a is nil (heap mode), allocations fall back to the heap.
 func (p *Parser) StructuralCopyWithTransform(a arena.Arena, v *Value, t *Transform) *Value {
+	if v == nil {
+		return nil
+	}
 	if t == nil {
 		return p.StructuralCopy(a, v)
 	}
-	if v == nil {
-		return v
+	if a == nil {
+		return structuralCopyValueHeapWithTransform(v, t)
 	}
-
 	scratch := p.ensureArenaScratch()
 	plan := planStructuralCopyWithTransformScratch(v, t, scratch)
 	state := newDeepCopyFillState(a, plan)
@@ -250,6 +281,93 @@ func planStructuralCopyWithTransformScratch(v *Value, t *Transform, scratch *are
 		scratch.deepCopyArraySizes = plan.arraySizes[:0]
 	}
 	return plan
+}
+
+func planDeepCopyWithTransformScratch(v *Value, t *Transform, scratch *arenaPlanScratch) deepCopyPlan {
+	var plan deepCopyPlan
+	if scratch != nil {
+		plan.objectSizes = scratch.deepCopyObjectSizes[:0]
+		plan.arraySizes = scratch.deepCopyArraySizes[:0]
+	}
+	countDeepCopyWithTransformValue(&plan, v, t)
+	if scratch != nil {
+		scratch.deepCopyObjectSizes = plan.objectSizes[:0]
+		scratch.deepCopyArraySizes = plan.arraySizes[:0]
+	}
+	return plan
+}
+
+// countDeepCopyWithTransformValue is the deep-copy analogue of
+// countStructuralCopyWithTransformValue. It counts scalar string bytes (since
+// a deep copy must duplicate them) while otherwise mirroring the transform's
+// Entries + Passthrough + ArrayItem logic.
+func countDeepCopyWithTransformValue(plan *deepCopyPlan, v *Value, t *Transform) {
+	if v == nil {
+		return
+	}
+
+	switch v.t {
+	case TypeObject:
+		if t == nil {
+			// No transform at this level — count as plain deep copy.
+			countDeepCopyValue(plan, v)
+			return
+		}
+		plan.values++
+		maxFields := len(t.Entries)
+		if t.Passthrough {
+			maxFields += len(v.o.kvs)
+		}
+		plan.objectSizes = append(plan.objectSizes, maxFields)
+		plan.kvs += maxFields
+
+		for i := range t.Entries {
+			plan.stringBytes += len(t.Entries[i].OutputKey)
+			child := v.Get(t.Entries[i].InputKey)
+			if child == nil {
+				continue
+			}
+			if t.Entries[i].Child != nil {
+				countDeepCopyWithTransformValue(plan, child, t.Entries[i].Child)
+			} else {
+				countDeepCopyValue(plan, child)
+			}
+		}
+		if t.Passthrough {
+			for _, entry := range v.o.kvs {
+				handled := false
+				for j := range t.Entries {
+					if entry.k == t.Entries[j].InputKey {
+						handled = true
+						break
+					}
+				}
+				if handled {
+					continue
+				}
+				plan.stringBytes += len(entry.k)
+				countDeepCopyValue(plan, entry.v)
+			}
+		}
+
+	case TypeArray:
+		plan.values++
+		plan.arraySizes = append(plan.arraySizes, len(v.a))
+		plan.arrayElems += len(v.a)
+		if t != nil && t.ArrayItem != nil {
+			for _, item := range v.a {
+				countDeepCopyWithTransformValue(plan, item, t.ArrayItem)
+			}
+		} else {
+			for _, item := range v.a {
+				countDeepCopyValue(plan, item)
+			}
+		}
+
+	default:
+		// Scalar: transforms do not apply; count as plain deep copy.
+		countDeepCopyValue(plan, v)
+	}
 }
 
 func countStructuralCopyWithTransformValue(plan *deepCopyPlan, v *Value, t *Transform) {
@@ -692,6 +810,122 @@ func (f *deepCopyFillState) structuralCopyWithTransformValue(v *Value, t *Transf
 	}
 }
 
+// deepCopyWithTransformValue is the deep-copy analogue of
+// structuralCopyWithTransformValue. Produces an independent tree — scalar
+// string and number payloads are copied onto the arena, not aliased.
+func (f *deepCopyFillState) deepCopyWithTransformValue(v *Value, t *Transform) *Value {
+	if v == nil {
+		return nil
+	}
+
+	switch v.t {
+	case TypeObject:
+		if t == nil {
+			return f.copyValue(v)
+		}
+		cp := f.allocValue()
+		cp.t = TypeObject
+		cp.stringNeedsEscape = false
+		cp.s = ""
+		cp.a = nil
+		cp.o.reset()
+
+		maxFields := f.nextObjectSize()
+		if maxFields == 0 {
+			cp.noEscapeSubtree = true
+			return cp
+		}
+		refs := f.allocObjectRefs(maxFields)
+
+		n := 0
+		clean := true
+		for i := range t.Entries {
+			child := v.Get(t.Entries[i].InputKey)
+			if child == nil {
+				continue
+			}
+			newKV := f.allocKV()
+			newKV.k = f.copyString(t.Entries[i].OutputKey)
+			newKV.keyUnescaped = true
+			newKV.keyNeedsEscape = hasSpecialChars(t.Entries[i].OutputKey)
+			if t.Entries[i].Child != nil {
+				newKV.v = f.deepCopyWithTransformValue(child, t.Entries[i].Child)
+			} else {
+				newKV.v = f.copyValue(child)
+			}
+			refs[n] = newKV
+			n++
+			clean = clean && !newKV.keyNeedsEscape && valueIsEscapeFree(newKV.v)
+		}
+		if t.Passthrough {
+			for _, entry := range v.o.kvs {
+				handled := false
+				for i := range t.Entries {
+					if entry.k == t.Entries[i].InputKey {
+						handled = true
+						break
+					}
+				}
+				if !handled {
+					for i := 0; i < n; i++ {
+						if entry.k == refs[i].k {
+							handled = true
+							break
+						}
+					}
+				}
+				if handled {
+					continue
+				}
+				newKV := f.allocKV()
+				newKV.k = f.copyString(entry.k)
+				newKV.keyUnescaped = true
+				newKV.keyNeedsEscape = entry.keyNeedsEscape
+				newKV.v = f.copyValue(entry.v)
+				refs[n] = newKV
+				n++
+				clean = clean && !newKV.keyNeedsEscape && valueIsEscapeFree(newKV.v)
+			}
+		}
+		cp.o.kvs = refs[:n]
+		cp.noEscapeSubtree = clean
+		return cp
+
+	case TypeArray:
+		cp := f.allocValue()
+		cp.t = TypeArray
+		cp.stringNeedsEscape = false
+		cp.s = ""
+		cp.a = nil
+		cp.o.reset()
+
+		count := f.nextArraySize()
+		if count == 0 {
+			cp.noEscapeSubtree = true
+			return cp
+		}
+		cp.a = f.allocArrayRefs(count)
+		clean := true
+		if t != nil && t.ArrayItem != nil {
+			for i, item := range v.a {
+				cp.a[i] = f.deepCopyWithTransformValue(item, t.ArrayItem)
+				clean = clean && valueIsEscapeFree(cp.a[i])
+			}
+		} else {
+			for i, item := range v.a {
+				cp.a[i] = f.copyValue(item)
+				clean = clean && valueIsEscapeFree(cp.a[i])
+			}
+		}
+		cp.noEscapeSubtree = clean
+		return cp
+
+	default:
+		// Scalar: transforms do not apply; delegate to the deep-copy path.
+		return f.copyValue(v)
+	}
+}
+
 // AppendArrayItems appends all elements from right into v. Both v and right
 // must be TypeArray; does nothing otherwise. The arena a is used to grow v's
 // backing slice.
@@ -748,4 +982,460 @@ func DeduplicateObjectKeysRecursively(v *Value) {
 		o.kvs[i] = nil // clear trailing slots for GC
 	}
 	o.kvs = o.kvs[:n]
+}
+
+// ---------------------------------------------------------------------------
+// Heap-mode copy primitives
+//
+// These are used when the destination arena is nil. They produce heap-
+// allocated Value trees with the same semantics as the arena path:
+//   - DeepCopy  : independent tree, all scalar payloads cloned.
+//   - Structural: structure-only clone; scalar leaves aliased from source.
+// The transform-aware variants apply rename/filter logic while following
+// the same cloning semantics as their plain siblings.
+// ---------------------------------------------------------------------------
+
+// copyValueHeap returns a fully independent heap-allocated deep copy of v.
+// Strings and numbers are cloned so the result shares no backing memory
+// with the source; the valueTrue / valueFalse / valueNull singletons are
+// returned as-is because they are immutable.
+func copyValueHeap(v *Value) *Value {
+	if v == nil {
+		return nil
+	}
+	switch v.t {
+	case TypeTrue:
+		return valueTrue
+	case TypeFalse:
+		return valueFalse
+	case TypeNull:
+		return valueNull
+	}
+	cp := &Value{
+		t:                 v.t,
+		stringNeedsEscape: v.stringNeedsEscape,
+	}
+	switch v.t {
+	case TypeString:
+		cp.s = strings.Clone(v.s)
+		cp.noEscapeSubtree = !cp.stringNeedsEscape
+	case TypeNumber:
+		cp.s = strings.Clone(v.s)
+		cp.noEscapeSubtree = true
+	case TypeObject:
+		if len(v.o.kvs) == 0 {
+			cp.noEscapeSubtree = true
+			return cp
+		}
+		cp.o.kvs = make([]*kv, len(v.o.kvs))
+		clean := true
+		for i, entry := range v.o.kvs {
+			child := copyValueHeap(entry.v)
+			newKV := &kv{
+				k:              strings.Clone(entry.k),
+				keyUnescaped:   true,
+				keyNeedsEscape: entry.keyNeedsEscape,
+				v:              child,
+			}
+			cp.o.kvs[i] = newKV
+			clean = clean && !newKV.keyNeedsEscape && valueIsEscapeFree(child)
+		}
+		cp.noEscapeSubtree = clean
+	case TypeArray:
+		if len(v.a) == 0 {
+			cp.noEscapeSubtree = true
+			return cp
+		}
+		cp.a = make([]*Value, len(v.a))
+		clean := true
+		for i, item := range v.a {
+			cp.a[i] = copyValueHeap(item)
+			clean = clean && valueIsEscapeFree(cp.a[i])
+		}
+		cp.noEscapeSubtree = clean
+	}
+	return cp
+}
+
+// structuralCopyValueHeap clones only the container structure onto the heap.
+// Scalar leaves (including the kv key strings, matching the arena path) are
+// aliased from the source. See the caveat in [StructuralCopy] about leaf
+// lifetimes when mixing arena and heap values.
+func structuralCopyValueHeap(v *Value) *Value {
+	if v == nil {
+		return nil
+	}
+	switch v.t {
+	case TypeObject:
+		cp := &Value{t: TypeObject}
+		if len(v.o.kvs) == 0 {
+			cp.noEscapeSubtree = true
+			return cp
+		}
+		cp.o.kvs = make([]*kv, len(v.o.kvs))
+		clean := true
+		for i, entry := range v.o.kvs {
+			newKV := &kv{
+				k:              entry.k, // aliased
+				keyUnescaped:   entry.keyUnescaped,
+				keyNeedsEscape: entry.keyNeedsEscape,
+				v:              structuralCopyValueHeap(entry.v),
+			}
+			cp.o.kvs[i] = newKV
+			clean = clean && !newKV.keyNeedsEscape && valueIsEscapeFree(newKV.v)
+		}
+		cp.noEscapeSubtree = clean
+		return cp
+	case TypeArray:
+		cp := &Value{t: TypeArray}
+		if len(v.a) == 0 {
+			cp.noEscapeSubtree = true
+			return cp
+		}
+		cp.a = make([]*Value, len(v.a))
+		clean := true
+		for i, item := range v.a {
+			cp.a[i] = structuralCopyValueHeap(item)
+			clean = clean && valueIsEscapeFree(cp.a[i])
+		}
+		cp.noEscapeSubtree = clean
+		return cp
+	default:
+		// Scalars: alias from source.
+		return v
+	}
+}
+
+// copyValueHeapWithTransform is the heap-mode variant of
+// deepCopyWithTransformValue. Applies rename/filter/passthrough while
+// producing an independent tree with all scalar payloads cloned.
+func copyValueHeapWithTransform(v *Value, t *Transform) *Value {
+	if v == nil {
+		return nil
+	}
+	switch v.t {
+	case TypeObject:
+		if t == nil {
+			return copyValueHeap(v)
+		}
+		cp := &Value{t: TypeObject}
+		maxFields := len(t.Entries)
+		if t.Passthrough {
+			maxFields += len(v.o.kvs)
+		}
+		if maxFields == 0 {
+			cp.noEscapeSubtree = true
+			return cp
+		}
+		refs := make([]*kv, 0, maxFields)
+		clean := true
+		for i := range t.Entries {
+			child := v.Get(t.Entries[i].InputKey)
+			if child == nil {
+				continue
+			}
+			outKey := strings.Clone(t.Entries[i].OutputKey)
+			var newChild *Value
+			if t.Entries[i].Child != nil {
+				newChild = copyValueHeapWithTransform(child, t.Entries[i].Child)
+			} else {
+				newChild = copyValueHeap(child)
+			}
+			newKV := &kv{
+				k:              outKey,
+				keyUnescaped:   true,
+				keyNeedsEscape: hasSpecialChars(outKey),
+				v:              newChild,
+			}
+			refs = append(refs, newKV)
+			clean = clean && !newKV.keyNeedsEscape && valueIsEscapeFree(newChild)
+		}
+		if t.Passthrough {
+			for _, entry := range v.o.kvs {
+				handled := false
+				for i := range t.Entries {
+					if entry.k == t.Entries[i].InputKey {
+						handled = true
+						break
+					}
+				}
+				if !handled {
+					for _, existing := range refs {
+						if entry.k == existing.k {
+							handled = true
+							break
+						}
+					}
+				}
+				if handled {
+					continue
+				}
+				newChild := copyValueHeap(entry.v)
+				newKV := &kv{
+					k:              strings.Clone(entry.k),
+					keyUnescaped:   true,
+					keyNeedsEscape: entry.keyNeedsEscape,
+					v:              newChild,
+				}
+				refs = append(refs, newKV)
+				clean = clean && !newKV.keyNeedsEscape && valueIsEscapeFree(newChild)
+			}
+		}
+		cp.o.kvs = refs
+		cp.noEscapeSubtree = clean
+		return cp
+
+	case TypeArray:
+		cp := &Value{t: TypeArray}
+		if len(v.a) == 0 {
+			cp.noEscapeSubtree = true
+			return cp
+		}
+		cp.a = make([]*Value, len(v.a))
+		clean := true
+		if t != nil && t.ArrayItem != nil {
+			for i, item := range v.a {
+				cp.a[i] = copyValueHeapWithTransform(item, t.ArrayItem)
+				clean = clean && valueIsEscapeFree(cp.a[i])
+			}
+		} else {
+			for i, item := range v.a {
+				cp.a[i] = copyValueHeap(item)
+				clean = clean && valueIsEscapeFree(cp.a[i])
+			}
+		}
+		cp.noEscapeSubtree = clean
+		return cp
+
+	default:
+		// Scalar: transforms do not apply; delegate to plain deep copy.
+		return copyValueHeap(v)
+	}
+}
+
+// structuralCopyValueHeapWithTransform is the heap-mode variant of
+// structuralCopyWithTransformValue. Rename/filter logic with aliased
+// scalar leaves.
+func structuralCopyValueHeapWithTransform(v *Value, t *Transform) *Value {
+	if v == nil {
+		return nil
+	}
+	switch v.t {
+	case TypeObject:
+		if t == nil {
+			return structuralCopyValueHeap(v)
+		}
+		cp := &Value{t: TypeObject}
+		maxFields := len(t.Entries)
+		if t.Passthrough {
+			maxFields += len(v.o.kvs)
+		}
+		if maxFields == 0 {
+			cp.noEscapeSubtree = true
+			return cp
+		}
+		refs := make([]*kv, 0, maxFields)
+		clean := true
+		for i := range t.Entries {
+			child := v.Get(t.Entries[i].InputKey)
+			if child == nil {
+				continue
+			}
+			outKey := t.Entries[i].OutputKey
+			var newChild *Value
+			if t.Entries[i].Child != nil {
+				newChild = structuralCopyValueHeapWithTransform(child, t.Entries[i].Child)
+			} else {
+				newChild = structuralCopyValueHeap(child)
+			}
+			newKV := &kv{
+				k:              outKey,
+				keyUnescaped:   true,
+				keyNeedsEscape: hasSpecialChars(outKey),
+				v:              newChild,
+			}
+			refs = append(refs, newKV)
+			clean = clean && !newKV.keyNeedsEscape && valueIsEscapeFree(newChild)
+		}
+		if t.Passthrough {
+			for _, entry := range v.o.kvs {
+				handled := false
+				for i := range t.Entries {
+					if entry.k == t.Entries[i].InputKey {
+						handled = true
+						break
+					}
+				}
+				if !handled {
+					for _, existing := range refs {
+						if entry.k == existing.k {
+							handled = true
+							break
+						}
+					}
+				}
+				if handled {
+					continue
+				}
+				newChild := structuralCopyValueHeap(entry.v)
+				newKV := &kv{
+					k:              entry.k,
+					keyUnescaped:   entry.keyUnescaped,
+					keyNeedsEscape: entry.keyNeedsEscape,
+					v:              newChild,
+				}
+				refs = append(refs, newKV)
+				clean = clean && !newKV.keyNeedsEscape && valueIsEscapeFree(newChild)
+			}
+		}
+		cp.o.kvs = refs
+		cp.noEscapeSubtree = clean
+		return cp
+
+	case TypeArray:
+		cp := &Value{t: TypeArray}
+		if len(v.a) == 0 {
+			cp.noEscapeSubtree = true
+			return cp
+		}
+		cp.a = make([]*Value, len(v.a))
+		clean := true
+		if t != nil && t.ArrayItem != nil {
+			for i, item := range v.a {
+				cp.a[i] = structuralCopyValueHeapWithTransform(item, t.ArrayItem)
+				clean = clean && valueIsEscapeFree(cp.a[i])
+			}
+		} else {
+			for i, item := range v.a {
+				cp.a[i] = structuralCopyValueHeap(item)
+				clean = clean && valueIsEscapeFree(cp.a[i])
+			}
+		}
+		cp.noEscapeSubtree = clean
+		return cp
+
+	default:
+		return v
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Package-level copy API (with pooled planner scratch for arena paths)
+// ---------------------------------------------------------------------------
+
+var copyScratchPool = sync.Pool{
+	New: func() any { return &arenaPlanScratch{} },
+}
+
+// acquireCopyScratch gets a scratch buffer from the pool, trimming any
+// planner slice that grew beyond maxArenaScratchCap on a prior call so a
+// single outlier document cannot permanently bloat the pool entries.
+func acquireCopyScratch() *arenaPlanScratch {
+	s := copyScratchPool.Get().(*arenaPlanScratch)
+	capBoundInts(&s.objectSizes)
+	capBoundInts(&s.arraySizes)
+	capBoundSpans(&s.keySpans)
+	capBoundSpans(&s.stringSpans)
+	capBoundInts(&s.deepCopyObjectSizes)
+	capBoundInts(&s.deepCopyArraySizes)
+	return s
+}
+
+func releaseCopyScratch(s *arenaPlanScratch) {
+	copyScratchPool.Put(s)
+}
+
+// DeepCopy returns a fully independent deep copy of v. When a is non-nil the
+// copy is allocated on the arena; when a is nil the copy is heap-allocated.
+// In both cases the returned tree shares no mutable memory with v — scalar
+// string payloads are cloned onto the destination.
+//
+// Planner scratch buffers are reused via an internal [sync.Pool] so repeated
+// calls avoid allocation. Callers that already hold a [Parser] in scope may
+// prefer [Parser.DeepCopy] to skip the pool's internal mutex.
+//
+// Returns nil when v is nil. The immutable singletons (valueTrue, valueFalse,
+// valueNull) are shared rather than cloned.
+func DeepCopy(a arena.Arena, v *Value) *Value {
+	if v == nil {
+		return nil
+	}
+	if a == nil {
+		return copyValueHeap(v)
+	}
+	scratch := acquireCopyScratch()
+	defer releaseCopyScratch(scratch)
+	plan := planDeepCopyWithScratch(v, scratch)
+	state := newDeepCopyFillState(a, plan)
+	return state.copyValue(v)
+}
+
+// DeepCopyWithTransform is the transform-aware variant of [DeepCopy]. Fields
+// are renamed or filtered according to t while every scalar payload that
+// survives the transform is deep-copied. See [Transform] for t semantics.
+//
+// When t is nil, behaves identically to [DeepCopy].
+func DeepCopyWithTransform(a arena.Arena, v *Value, t *Transform) *Value {
+	if v == nil {
+		return nil
+	}
+	if t == nil {
+		return DeepCopy(a, v)
+	}
+	if a == nil {
+		return copyValueHeapWithTransform(v, t)
+	}
+	scratch := acquireCopyScratch()
+	defer releaseCopyScratch(scratch)
+	plan := planDeepCopyWithTransformScratch(v, t, scratch)
+	state := newDeepCopyFillState(a, plan)
+	return state.deepCopyWithTransformValue(v, t)
+}
+
+// StructuralCopy clones only the container structure of v. Object and array
+// nodes are freshly allocated (on a when non-nil, else on the heap) while
+// scalar leaves (strings, numbers, bools, nulls) and object key strings are
+// aliased from the source tree unchanged.
+//
+// This is intended for trees whose leaves already have the same lifetime as
+// the cloned structure — typically when both source and destination live
+// within the same request and reset together. It is not a safe replacement
+// for [DeepCopy] when moving heap-allocated leaves into arena-owned
+// containers.
+func StructuralCopy(a arena.Arena, v *Value) *Value {
+	if v == nil {
+		return nil
+	}
+	if a == nil {
+		return structuralCopyValueHeap(v)
+	}
+	scratch := acquireCopyScratch()
+	defer releaseCopyScratch(scratch)
+	plan := planStructuralCopyWithScratch(v, scratch)
+	state := newDeepCopyFillState(a, plan)
+	return state.structuralCopyValue(v)
+}
+
+// StructuralCopyWithTransform clones v's container structure onto a (or the
+// heap when a is nil), applying t to rename and filter object fields during
+// the copy. Scalar leaves are aliased from the source exactly as in
+// [StructuralCopy]; only object structure, array structure, and newly
+// introduced OutputKey strings are freshly allocated.
+//
+// When t is nil, behaves identically to [StructuralCopy].
+func StructuralCopyWithTransform(a arena.Arena, v *Value, t *Transform) *Value {
+	if v == nil {
+		return nil
+	}
+	if t == nil {
+		return StructuralCopy(a, v)
+	}
+	if a == nil {
+		return structuralCopyValueHeapWithTransform(v, t)
+	}
+	scratch := acquireCopyScratch()
+	defer releaseCopyScratch(scratch)
+	plan := planStructuralCopyWithTransformScratch(v, t, scratch)
+	state := newDeepCopyFillState(a, plan)
+	return state.structuralCopyWithTransformValue(v, t)
 }
