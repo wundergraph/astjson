@@ -287,6 +287,41 @@ func TestDeepCopyWithTransformPassthroughCollision(t *testing.T) {
 	})
 }
 
+// TestDeepCopyWithTransformPassthroughDuplicateKeys covers the case where
+// a source object has two kvs with the same key and Passthrough is on. The
+// fill drops the later duplicate via refs lookup; the planner must not
+// over-count it, or sibling-slab positions drift and marshal panics.
+func TestDeepCopyWithTransformPassthroughDuplicateKeys(t *testing.T) {
+	input := `{"y":false,"y":[1,2,3],"b":[4]}`
+	xform := &Transform{
+		Entries:     []TransformEntry{{InputKey: "name", OutputKey: "age"}},
+		Passthrough: true,
+	}
+	// Only the first "y" survives (first-wins on duplicates, matches fill).
+	expected := `{"y":false,"b":[4]}`
+
+	t.Run("heap", func(t *testing.T) {
+		cp := DeepCopyWithTransform(nil, MustParse(input), xform)
+		require.Equal(t, expected, string(cp.MarshalTo(nil)))
+	})
+	t.Run("arena", func(t *testing.T) {
+		a := arena.NewMonotonicArena()
+		var p Parser
+		src, err := p.ParseWithArena(a, input)
+		require.NoError(t, err)
+		cp := DeepCopyWithTransform(a, src, xform)
+		require.Equal(t, expected, string(cp.MarshalTo(nil)))
+	})
+	t.Run("structural arena", func(t *testing.T) {
+		a := arena.NewMonotonicArena()
+		var p Parser
+		src, err := p.ParseWithArena(a, input)
+		require.NoError(t, err)
+		cp := StructuralCopyWithTransform(a, src, xform)
+		require.Equal(t, expected, string(cp.MarshalTo(nil)))
+	})
+}
+
 // TestStructuralCopyWithTransformPassthroughCollision mirrors the above for
 // the structural copy path; the same planner-vs-fill mismatch existed
 // there before the fix.

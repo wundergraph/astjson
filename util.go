@@ -334,8 +334,20 @@ func countDeepCopyWithTransformValue(plan *deepCopyPlan, v *Value, t *Transform)
 			}
 		}
 		if t.Passthrough {
-			for _, entry := range v.o.kvs {
+			for i, entry := range v.o.kvs {
 				if passthroughSkipped(v, entry.k, t) {
+					continue
+				}
+				// Duplicate source keys: the fill emits only the first
+				// occurrence and refs-skips the rest. Planner must match.
+				dup := false
+				for j := 0; j < i; j++ {
+					if v.o.kvs[j].k == entry.k {
+						dup = true
+						break
+					}
+				}
+				if dup {
 					continue
 				}
 				plan.stringBytes += len(entry.k)
@@ -424,12 +436,23 @@ func countStructuralCopyWithTransformValue(plan *deepCopyPlan, v *Value, t *Tran
 		}
 		if t.Passthrough {
 			// Passthrough fields are structurally copied verbatim, except
-			// for fields that rename-collide with an emitted OutputKey or
-			// shadow an InputKey already handled above. See
-			// [passthroughSkipped] for why the predicate must match the
-			// fill's skip logic.
-			for _, entry := range v.o.kvs {
+			// for fields that rename-collide with an emitted OutputKey,
+			// shadow an InputKey already handled above, or appear as a
+			// duplicate of an earlier passthrough field (refs-deduped by
+			// the fill). See [passthroughSkipped] for why the predicate
+			// must match the fill's skip logic.
+			for i, entry := range v.o.kvs {
 				if passthroughSkipped(v, entry.k, t) {
+					continue
+				}
+				dup := false
+				for j := 0; j < i; j++ {
+					if v.o.kvs[j].k == entry.k {
+						dup = true
+						break
+					}
+				}
+				if dup {
 					continue
 				}
 				countStructuralCopyValue(plan, entry.v)
