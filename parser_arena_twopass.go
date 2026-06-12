@@ -12,6 +12,45 @@ import (
 	"github.com/wundergraph/go-arena"
 )
 
+// ---------------------------------------------------------------------------
+// Two-pass arena parser
+//
+// Arena-mode parsing (ParseWithArena / ParseBytesWithArena with a non-nil
+// arena) runs in two passes instead of allocating tree nodes as it goes:
+//
+//   Pass 1 — plan (arenaPlanner): validates the input and records exact
+//   totals (values, kvs, arrayElems, stringBytes), per-container element
+//   counts (objectSizes / arraySizes, in pre-order DFS encounter order),
+//   and the raw length + escape status of every key and string token
+//   (keySpans / stringSpans). No tree nodes are allocated.
+//
+//   Pass 2 — fill (arenaFillState): allocates one exactly-sized slab per
+//   node kind from the arena, then walks the input a second time, drawing
+//   every Value, kv, ref slice, and string byte from the slabs via
+//   bump-pointer positions. The fill does not re-tokenize strings: it reads
+//   the next token length from the recorded spans and slices the input
+//   directly.
+//
+// Why two passes: per-node arena allocations dominated the profile of the
+// previous arena parser. Sizing slabs exactly turns one allocation per node
+// into a handful per document, at the cost of touching the input twice.
+// This trade only pays off in arena mode — heap mode stays single-pass
+// (see Parser.parse) because Go's allocator handles many small allocations
+// well, and a heap-allocated slab would have to be GC-traced, defeating the
+// purpose.
+//
+// Invariants:
+//
+//   - Plan and fill must make identical decisions for every token. Any
+//     drift makes later containers draw misaligned slab slices, silently
+//     corrupting sibling nodes. arenaFillState.finish verifies at the end
+//     of Pass 2 that every slab and plan list was consumed exactly, and
+//     returns a BUG error otherwise.
+//   - true / false / null produce the shared valueTrue / valueFalse /
+//     valueNull singletons. They consume no slab slot, so Pass 1 must not
+//     count them (the NaN special case does allocate and is counted).
+// ---------------------------------------------------------------------------
+
 type arenaParsePlan struct {
 	values      int
 	kvs         int
