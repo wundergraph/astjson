@@ -163,6 +163,11 @@ func TestHasSpecialCharsVariantsAgree(t *testing.T) {
 	}
 	for _, in := range inputs {
 		want := hasSpecialCharsLoop(in)
+		// Anchor the local benchmark variants to the production function so
+		// this harness fails if hasSpecialChars in parser.go ever drifts.
+		if got := hasSpecialChars(in); got != want {
+			t.Errorf("hasSpecialChars(%q) = %v, want %v", in, got, want)
+		}
 		if got := hasSpecialCharsIndexAny(in); got != want {
 			t.Errorf("IndexAny(%q) = %v, want %v", in, got, want)
 		}

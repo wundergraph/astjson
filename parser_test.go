@@ -1575,41 +1575,58 @@ func TestEscapeStringSlowPath(t *testing.T) {
 	})
 }
 
-// TestUnescapeStringBestEffortEdgeCases tests edge cases in unescaping
+// TestUnescapeStringBestEffortEdgeCases tests edge cases in unescaping.
+// Malformed escape sequences are kept raw, so the decoded result still
+// contains a backslash and needsEscape must be true.
 func TestUnescapeStringBestEffortEdgeCases(t *testing.T) {
 	t.Run("incomplete unicode escape", func(t *testing.T) {
-		result, _ := unescapeStringBestEffortInfo(nil, "\\u12")
+		result, needsEscape := unescapeStringBestEffortInfo(nil, "\\u12")
 		if result != "\\u12" {
 			t.Errorf("unescapeStringBestEffort(\"\\u12\") = %q, want %q", result, "\\u12")
+		}
+		if !needsEscape {
+			t.Errorf("unexpected needsEscape for %q; got %v; want true", "\\u12", needsEscape)
 		}
 	})
 
 	t.Run("invalid unicode escape", func(t *testing.T) {
-		result, _ := unescapeStringBestEffortInfo(nil, "\\u12xy")
+		result, needsEscape := unescapeStringBestEffortInfo(nil, "\\u12xy")
 		if result != "\\u12xy" {
 			t.Errorf("unescapeStringBestEffort(\"\\u12xy\") = %q, want %q", result, "\\u12xy")
+		}
+		if !needsEscape {
+			t.Errorf("unexpected needsEscape for %q; got %v; want true", "\\u12xy", needsEscape)
 		}
 	})
 
 	t.Run("incomplete surrogate pair", func(t *testing.T) {
-		result, _ := unescapeStringBestEffortInfo(nil, "\\ud83e")
+		result, needsEscape := unescapeStringBestEffortInfo(nil, "\\ud83e")
 		if result != "\\ud83e" {
 			t.Errorf("unescapeStringBestEffort(\"\\ud83e\") = %q, want %q", result, "\\ud83e")
+		}
+		if !needsEscape {
+			t.Errorf("unexpected needsEscape for %q; got %v; want true", "\\ud83e", needsEscape)
 		}
 	})
 
 	t.Run("invalid surrogate pair", func(t *testing.T) {
-		result, _ := unescapeStringBestEffortInfo(nil, "\\ud83e\\u1234")
-		// The function actually processes this as a valid surrogate pair, so we need to check the actual behavior
-		if len(result) == 0 {
-			t.Errorf("unescapeStringBestEffort(\"\\ud83e\\u1234\") returned empty string")
+		// A high surrogate followed by a non-low-surrogate escape is kept raw.
+		result, needsEscape := unescapeStringBestEffortInfo(nil, "\\ud83e\\u1234")
+		if result != "\\ud83e\\u1234" {
+			t.Errorf("unescapeStringBestEffort(\"\\ud83e\\u1234\") = %q, want %q", result, "\\ud83e\\u1234")
+		}
+		if !needsEscape {
+			t.Errorf("unexpected needsEscape for %q; got %v; want true", "\\ud83e\\u1234", needsEscape)
 		}
 	})
 
 	t.Run("unknown escape sequence", func(t *testing.T) {
-		result, _ := unescapeStringBestEffortInfo(nil, "\\x")
+		result, needsEscape := unescapeStringBestEffortInfo(nil, "\\x")
 		if result != "\\x" {
 			t.Errorf("unescapeStringBestEffort(\"\\x\") = %q, want %q", result, "\\x")
+		}
+		if !needsEscape {
+			t.Errorf("unexpected needsEscape for %q; got %v; want true", "\\x", needsEscape)
 		}
 	})
 }
@@ -1859,9 +1876,14 @@ func TestUnescapeStringBestEffortMore(t *testing.T) {
 		}
 
 		for _, tc := range testCases {
-			result, _ := unescapeStringBestEffortInfo(nil, tc.input)
+			result, needsEscape := unescapeStringBestEffortInfo(nil, tc.input)
 			if result != tc.expected {
 				t.Errorf("unescapeStringBestEffort(%q) = %q, want %q", tc.input, result, tc.expected)
+			}
+			// Every decoded result is a control character below 0x20,
+			// which must be re-escaped when marshaling.
+			if !needsEscape {
+				t.Errorf("unexpected needsEscape for %q; got %v; want true", tc.input, needsEscape)
 			}
 		}
 	})
@@ -2060,23 +2082,34 @@ func TestUintEdgeCasesMore(t *testing.T) {
 // TestUnescapeStringBestEffortFinal tests final edge cases in unescaping
 func TestUnescapeStringBestEffortFinal(t *testing.T) {
 	t.Run("empty string", func(t *testing.T) {
-		result, _ := unescapeStringBestEffortInfo(nil, "")
+		result, needsEscape := unescapeStringBestEffortInfo(nil, "")
 		if result != "" {
 			t.Errorf("unescapeStringBestEffort(\"\") = %q, want \"\"", result)
+		}
+		if needsEscape {
+			t.Errorf("unexpected needsEscape for empty string; got %v; want false", needsEscape)
 		}
 	})
 
 	t.Run("string with no escapes", func(t *testing.T) {
-		result, _ := unescapeStringBestEffortInfo(nil, "hello world")
+		result, needsEscape := unescapeStringBestEffortInfo(nil, "hello world")
 		if result != "hello world" {
 			t.Errorf("unescapeStringBestEffort(\"hello world\") = %q, want \"hello world\"", result)
+		}
+		if needsEscape {
+			t.Errorf("unexpected needsEscape for %q; got %v; want false", "hello world", needsEscape)
 		}
 	})
 
 	t.Run("string with only escapes at end", func(t *testing.T) {
-		result, _ := unescapeStringBestEffortInfo(nil, "hello\\n")
+		// The decoded result contains a newline, which must be re-escaped
+		// when marshaling.
+		result, needsEscape := unescapeStringBestEffortInfo(nil, "hello\\n")
 		if result != "hello\n" {
 			t.Errorf("unescapeStringBestEffort(\"hello\\n\") = %q, want \"hello\\n\"", result)
+		}
+		if !needsEscape {
+			t.Errorf("unexpected needsEscape for %q; got %v; want true", "hello\\n", needsEscape)
 		}
 	})
 }
