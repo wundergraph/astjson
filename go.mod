@@ -4,7 +4,7 @@ go 1.25
 
 require (
 	github.com/stretchr/testify v1.11.1
-	github.com/wundergraph/go-arena v0.0.0-20251008210416-55cb97e6f68f
+	github.com/wundergraph/go-arena v1.2.0
 )
 
 require (

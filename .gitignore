@@ -1,3 +1,6 @@
 tags
 .idea
 .DS_Store
+.serena
+IMPROVEMENTS_BENCHMARKS.md
+*.prof

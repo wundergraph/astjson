@@ -1,11 +1,9 @@
 package astjson
 
 import (
-	"fmt"
+	"errors"
 	"strconv"
 	"strings"
-	"unicode/utf16"
-	"unicode/utf8"
 
 	"github.com/wundergraph/astjson/fastfloat"
 	"github.com/wundergraph/go-arena"
@@ -46,6 +44,44 @@ func NewParseError(err error) *ParseError {
 // Parser cannot be used from concurrent goroutines.
 // Use per-goroutine parsers or ParserPool instead.
 type Parser struct {
+	arenaScratch *arenaPlanScratch
+}
+
+// maxArenaScratchCap bounds the capacity of the planner scratch buffers
+// retained on a Parser between parses. A single outlier parse can grow these
+// slices to the size of the largest document seen; without a cap, a pooled
+// or long-lived Parser would permanently hold that peak capacity. Any buffer
+// whose cap exceeds this bound is reallocated at the start of the next parse.
+const maxArenaScratchCap = 4096
+
+func (p *Parser) ensureArenaScratch() *arenaPlanScratch {
+	if p == nil {
+		return nil
+	}
+	if p.arenaScratch == nil {
+		p.arenaScratch = &arenaPlanScratch{}
+		return p.arenaScratch
+	}
+	s := p.arenaScratch
+	capBoundInts(&s.objectSizes)
+	capBoundInts(&s.arraySizes)
+	capBoundSpans(&s.keySpans)
+	capBoundSpans(&s.stringSpans)
+	capBoundInts(&s.deepCopyObjectSizes)
+	capBoundInts(&s.deepCopyArraySizes)
+	return s
+}
+
+func capBoundInts(b *[]int) {
+	if cap(*b) > maxArenaScratchCap {
+		*b = make([]int, 0, maxArenaScratchCap)
+	}
+}
+
+func capBoundSpans(b *[]arenaStringSpan) {
+	if cap(*b) > maxArenaScratchCap {
+		*b = make([]arenaStringSpan, 0, maxArenaScratchCap)
+	}
 }
 
 // Parse parses s containing JSON.
@@ -70,6 +106,7 @@ func (p *Parser) Parse(s string) (*Value, error) {
 func (p *Parser) ParseWithArena(a arena.Arena, s string) (*Value, error) {
 	if a != nil {
 		s = arenaString(a, s)
+		return parseArenaTwoPass(p, a, s)
 	}
 	return p.parse(a, s)
 }
@@ -100,7 +137,7 @@ func (p *Parser) ParseBytesWithArena(a arena.Arena, b []byte) (*Value, error) {
 	if a != nil {
 		ab := arena.AllocateSlice[byte](a, len(b), len(b))
 		copy(ab, b)
-		return p.parse(a, b2s(ab))
+		return parseArenaTwoPass(p, a, b2s(ab))
 	}
 	return p.parse(nil, b2s(b))
 }
@@ -110,11 +147,11 @@ func (p *Parser) parse(a arena.Arena, s string) (*Value, error) {
 
 	v, tail, err := parseValue(a, s, 0)
 	if err != nil {
-		return nil, NewParseError(fmt.Errorf("cannot parse JSON: %s; unparsed tail: %q", err, startEndString(tail)))
+		return nil, NewParseError(errors.New("cannot parse JSON: " + err.Error() + "; unparsed tail: " + strconv.Quote(startEndString(tail))))
 	}
 	tail = skipWS(tail)
 	if len(tail) > 0 {
-		return nil, NewParseError(fmt.Errorf("unexpected tail: %q", startEndString(tail)))
+		return nil, NewParseError(errors.New("unexpected tail: " + strconv.Quote(startEndString(tail))))
 	}
 	return v, nil
 }
@@ -128,18 +165,9 @@ func skipWS(s string) string {
 }
 
 func skipWSSlow(s string) string {
-	if len(s) == 0 {
-		return s
-	}
-
-	// Branch prediction optimization: check most common whitespace first
-	// Space (0x20) is most common, then newline, tab, carriage return
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c != 0x20 { // Most common whitespace
-			if c != 0x0A && c != 0x09 && c != 0x0D {
-				return s[i:]
-			}
+		if charFlags[s[i]]&charWS == 0 {
+			return s[i:]
 		}
 	}
 	return ""
@@ -148,10 +176,10 @@ func skipWSSlow(s string) string {
 // kv represents a key-value pair in JSON objects.
 // Cache-friendly layout: hot data first
 type kv struct {
-	keyUnescaped bool   // 1 byte - tracks if this specific key has been unescaped
-	k            string // 16 bytes
-	v            *Value // 8 bytes
-	// Total: 25 bytes - still fits in cache line
+	keyUnescaped   bool // tracks if this specific key has been unescaped
+	keyNeedsEscape bool // keyUnescaped only: decoded key needs escaping on marshal
+	k              string
+	v              *Value
 }
 
 // MaxDepth is the maximum depth for nested JSON.
@@ -159,11 +187,11 @@ const MaxDepth = 300
 
 func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 	if len(s) == 0 {
-		return nil, s, fmt.Errorf("cannot parse empty string")
+		return nil, s, errParseEmpty
 	}
 	depth++
 	if depth > MaxDepth {
-		return nil, s, fmt.Errorf("too big depth for the nested JSON; it exceeds %d", MaxDepth)
+		return nil, s, errParseMaxDepth
 	}
 
 	// Branch prediction optimization: order by frequency
@@ -171,38 +199,44 @@ func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 	switch s[0] {
 	case '"':
 		// String - most common in JSON
-		ss, tail, err := parseRawString(s[1:])
+		ss, tail, hasEscape, err := parseRawStringInfo(s[1:])
 		if err != nil {
-			return nil, tail, fmt.Errorf("cannot parse string: %s", err)
+			return nil, tail, errors.New("cannot parse string: " + err.Error())
 		}
 		v := arena.Allocate[Value](a)
 		v.t = TypeString
-		v.s = unescapeStringBestEffort(a, ss)
+		if hasEscape {
+			v.s, v.stringNeedsEscape = unescapeStringBestEffortInfo(a, ss)
+		} else {
+			v.s = ss
+			v.stringNeedsEscape = hasSpecialChars(ss)
+		}
+		v.noEscapeSubtree = !v.stringNeedsEscape
 		return v, tail, nil
 	case '{':
 		// Object - very common
 		v, tail, err := parseObject(a, s[1:], depth)
 		if err != nil {
-			return nil, tail, fmt.Errorf("cannot parse object: %s", err)
+			return nil, tail, errors.New("cannot parse object: " + err.Error())
 		}
 		return v, tail, nil
 	case '[':
 		// Array - common
 		v, tail, err := parseArray(a, s[1:], depth)
 		if err != nil {
-			return nil, tail, fmt.Errorf("cannot parse array: %s", err)
+			return nil, tail, errors.New("cannot parse array: " + err.Error())
 		}
 		return v, tail, nil
 	case 't':
 		// true literal - less common
 		if len(s) < len("true") || s[:len("true")] != "true" {
-			return nil, s, fmt.Errorf("unexpected value found: %q", s)
+			return nil, s, errors.New("unexpected value found: " + strconv.Quote(s))
 		}
 		return valueTrue, s[len("true"):], nil
 	case 'f':
 		// false literal - less common
 		if len(s) < len("false") || s[:len("false")] != "false" {
-			return nil, s, fmt.Errorf("unexpected value found: %q", s)
+			return nil, s, errors.New("unexpected value found: " + strconv.Quote(s))
 		}
 		return valueFalse, s[len("false"):], nil
 	case 'n':
@@ -213,20 +247,22 @@ func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 				v := arena.Allocate[Value](a)
 				v.t = TypeNumber
 				v.s = s[:3]
+				v.noEscapeSubtree = true
 				return v, s[3:], nil
 			}
-			return nil, s, fmt.Errorf("unexpected value found: %q", s)
+			return nil, s, errors.New("unexpected value found: " + strconv.Quote(s))
 		}
 		return valueNull, s[len("null"):], nil
 	default:
 		// Number - very common, but handled last due to complex parsing
 		ns, tail, err := parseRawNumber(s)
 		if err != nil {
-			return nil, tail, fmt.Errorf("cannot parse number: %s", err)
+			return nil, tail, errors.New("cannot parse number: " + err.Error())
 		}
 		v := arena.Allocate[Value](a)
 		v.t = TypeNumber
 		v.s = ns
+		v.noEscapeSubtree = true
 		return v, tail, nil
 	}
 }
@@ -234,19 +270,21 @@ func parseValue(a arena.Arena, s string, depth int) (*Value, string, error) {
 func parseArray(a arena.Arena, s string, depth int) (*Value, string, error) {
 	s = skipWS(s)
 	if len(s) == 0 {
-		return nil, s, fmt.Errorf("missing ']'")
+		return nil, s, errParseMissingCloseBracket
 	}
 
 	if s[0] == ']' {
 		v := arena.Allocate[Value](a)
 		v.t = TypeArray
 		v.a = v.a[:0]
+		v.noEscapeSubtree = true
 		return v, s[1:], nil
 	}
 
 	arr := arena.Allocate[Value](a)
 	arr.t = TypeArray
 	arr.a = arr.a[:0]
+	clean := true
 	for {
 		var v *Value
 		var err error
@@ -254,7 +292,7 @@ func parseArray(a arena.Arena, s string, depth int) (*Value, string, error) {
 		s = skipWS(s)
 		v, s, err = parseValue(a, s, depth)
 		if err != nil {
-			return nil, s, fmt.Errorf("cannot parse array value: %s", err)
+			return nil, s, errors.New("cannot parse array value: " + err.Error())
 		}
 		if arr.a == nil {
 			arr.a = arena.AllocateSlice[*Value](a, 1, 1)
@@ -262,10 +300,11 @@ func parseArray(a arena.Arena, s string, depth int) (*Value, string, error) {
 		} else {
 			arr.a = arena.SliceAppend(a, arr.a, v)
 		}
+		clean = clean && valueIsEscapeFree(v)
 
 		s = skipWS(s)
 		if len(s) == 0 {
-			return nil, s, fmt.Errorf("unexpected end of array")
+			return nil, s, errParseUnexpectedEndArray
 		}
 		if s[0] == ',' {
 			s = s[1:]
@@ -273,28 +312,31 @@ func parseArray(a arena.Arena, s string, depth int) (*Value, string, error) {
 		}
 		if s[0] == ']' {
 			s = s[1:]
+			arr.noEscapeSubtree = clean
 			return arr, s, nil
 		}
-		return nil, s, fmt.Errorf("missing ',' after array value")
+		return nil, s, errParseMissingCommaArray
 	}
 }
 
 func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 	s = skipWS(s)
 	if len(s) == 0 {
-		return nil, s, fmt.Errorf("missing '}'")
+		return nil, s, errParseMissingCloseBrace
 	}
 
 	if s[0] == '}' {
 		v := arena.Allocate[Value](a)
 		v.t = TypeObject
 		v.o.reset()
+		v.noEscapeSubtree = true
 		return v, s[1:], nil
 	}
 
 	o := arena.Allocate[Value](a)
 	o.t = TypeObject
 	o.o.reset()
+	clean := true
 	for {
 		var err error
 		kv := o.o.getKV(a)
@@ -302,17 +344,22 @@ func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 		// Parse key.
 		s = skipWS(s)
 		if len(s) == 0 || s[0] != '"' {
-			return nil, s, fmt.Errorf(`cannot find opening '"" for object key`)
+			return nil, s, errParseMissingOpenQuote
 		}
-		kv.k, s, err = parseRawKey(s[1:])
+		var keyHasEscape bool
+		kv.k, s, keyHasEscape, err = parseRawKey(s[1:])
 		if err != nil {
-			return nil, s, fmt.Errorf("cannot parse object key: %s", err)
+			return nil, s, errors.New("cannot parse object key: " + err.Error())
 		}
-		kv.k = unescapeStringBestEffort(a, kv.k)
+		if keyHasEscape {
+			kv.k, kv.keyNeedsEscape = unescapeStringBestEffortInfo(a, kv.k)
+		} else {
+			kv.keyNeedsEscape = hasSpecialChars(kv.k)
+		}
 		kv.keyUnescaped = true
 		s = skipWS(s)
 		if len(s) == 0 || s[0] != ':' {
-			return nil, s, fmt.Errorf("missing ':' after object key")
+			return nil, s, errParseMissingColon
 		}
 		s = s[1:]
 
@@ -320,46 +367,229 @@ func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 		s = skipWS(s)
 		kv.v, s, err = parseValue(a, s, depth)
 		if err != nil {
-			return nil, s, fmt.Errorf("cannot parse object value: %s", err)
+			return nil, s, errors.New("cannot parse object value: " + err.Error())
 		}
+		clean = clean && !kv.keyNeedsEscape && valueIsEscapeFree(kv.v)
 		s = skipWS(s)
 		if len(s) == 0 {
-			return nil, s, fmt.Errorf("unexpected end of object")
+			return nil, s, errParseUnexpectedEndObject
 		}
 		if s[0] == ',' {
 			s = s[1:]
 			continue
 		}
 		if s[0] == '}' {
+			o.noEscapeSubtree = clean
 			return o, s[1:], nil
 		}
-		return nil, s, fmt.Errorf("missing ',' after object value")
+		return nil, s, errParseMissingCommaObject
 	}
 }
 
-func escapeString(dst []byte, s string) []byte {
-	if !hasSpecialChars(s) {
-		// Fast path - nothing to escape.
+func appendQuotedString(dst []byte, s string, needsEscape bool) []byte {
+	if !needsEscape {
 		dst = append(dst, '"')
 		dst = append(dst, s...)
 		dst = append(dst, '"')
 		return dst
 	}
-
-	// Slow path.
 	return escapeStringSlowPath(dst, s)
 }
 
+// valueIsEscapeFree reports whether v contributes no escape-requiring
+// content to an enclosing container's noEscapeSubtree aggregate. For
+// TypeString this means the decoded string does not need escaping; for
+// containers it relies on their noEscapeSubtree flag; scalars without a
+// payload (true/false/null/number) never contribute and return true.
+func valueIsEscapeFree(v *Value) bool {
+	if v == nil {
+		return true
+	}
+	switch v.t {
+	case TypeString:
+		return !v.stringNeedsEscape
+	case TypeObject, TypeArray:
+		return v.noEscapeSubtree
+	default:
+		return true
+	}
+}
+
+// RecomputeEscapeHint walks v bottom-up and refreshes the noEscapeSubtree
+// flag from the current state of keys and string values. Call this after
+// mutating through a sub-handle of a larger tree if you plan to rely on
+// the hint at a higher level — mutation APIs only update the flag on the
+// directly-mutated node and cannot invalidate ancestors.
+func (v *Value) RecomputeEscapeHint() bool {
+	if v == nil {
+		return true
+	}
+	switch v.t {
+	case TypeString:
+		v.noEscapeSubtree = !v.stringNeedsEscape
+	case TypeObject:
+		clean := true
+		for _, kv := range v.o.kvs {
+			childClean := kv.v.RecomputeEscapeHint()
+			clean = clean && !kv.keyNeedsEscape && childClean
+		}
+		v.noEscapeSubtree = clean
+	case TypeArray:
+		clean := true
+		for _, item := range v.a {
+			clean = clean && item.RecomputeEscapeHint()
+		}
+		v.noEscapeSubtree = clean
+	default:
+		v.noEscapeSubtree = true
+	}
+	return v.noEscapeSubtree
+}
+
+// hasSpecialChars reports whether s contains any byte that requires
+// escaping in a JSON string: '"', '\\', or a control byte (< 0x20).
+//
+// ----------------------------------------------------------------------
+// What is SWAR?
+// ----------------------------------------------------------------------
+//
+// SWAR stands for "SIMD Within A Register". It is a way to do parallel
+// byte operations using only ordinary integer instructions — no actual
+// SIMD/vector hardware required. The idea is:
+//
+//  1. Pack 8 bytes side-by-side into one uint64. A 64-bit register is
+//     really "8 lanes of 1 byte each" if you squint at it.
+//  2. Apply scalar ALU ops (+ - & | ^ ~) to the whole uint64 at once.
+//     Those ops naturally act on each lane in parallel — as long as
+//     you choose ops that don't let a lane corrupt its neighbours.
+//  3. One ALU op now does 8 bytes of work. Loading 1 byte and loading
+//     8 bytes both cost a single MOV, so we are getting roughly 8× the
+//     throughput per cycle without touching NEON/AVX at all.
+//
+// The fundamental primitive is the Mycroft "haszero" trick:
+//
+//	hasZeroByte(x) = (x - 0x0101010101010101) & ^x & 0x8080808080808080
+//
+// Why it works, lane by lane:
+//   - Subtracting 1 from a byte that is 0x00 underflows to 0xFF, which
+//     sets that lane's high bit. Subtracting 1 from any byte in 1..255
+//     leaves the high bit clear (or unchanged).
+//   - "& ^x" guards against bytes whose high bit was already set in x
+//     (e.g. 0x80): without this, those would falsely register as "zero".
+//   - "& 0x80..80" keeps only the eight high bits — one bit per lane —
+//     so a single non-zero test answers "any lane matched?" in one branch.
+//
+// Every other predicate we want is a one-line transform on top of haszero:
+//   - "byte == c"   →  hasZeroByte(x ^ broadcast(c))   (XOR makes c → 0)
+//   - "byte <  N"   →  ((x - N*lo) & ^x) & hi          (underflow trick)
+//
+// Caveat — borrow propagation. The subtraction is a real 64-bit subtract,
+// so an underflow in one lane borrows from the next-higher lane and can
+// corrupt its result. That can yield extra "matches", but only ever
+// in lanes adjacent to a *real* match. Since we only ask "did anything
+// match?", the boolean answer is still correct. (If we needed the index
+// of the first match, we would use a saturated variant: `(x | hi) - …`
+// pre-sets each high bit, which absorbs the borrow within a lane and
+// prevents it from crossing into the neighbour.)
+//
+// ----------------------------------------------------------------------
+// How this function uses SWAR
+// ----------------------------------------------------------------------
+//
+// The hot path scans 8 bytes at a time, building three byte-wise
+// predicates in parallel — "byte < 0x20", "byte == '\"'", "byte == '\\'" —
+// then OR-ing them and testing the eight high bits in a single branch.
+// The tail (< 8 leftover bytes) falls back to the per-byte charFlags
+// lookup. Crossover vs. the pure byte loop is at len ≈ 8; see
+// BenchmarkHasSpecialSweep.
+//
+// Constants below are byte-broadcast masks: "lo" sets bit 0 of every
+// byte, "hi" sets bit 7 of every byte; the others broadcast a single
+// byte value (e.g. 0x22 = '"') across all eight lanes so we can test
+// every byte in parallel.
+const (
+	hasSpecialLo     uint64 = 0x0101010101010101 // 1 in each byte (subtract pattern)
+	hasSpecialHi     uint64 = 0x8080808080808080 // high bit of each byte (extract pattern)
+	hasSpecialQuote  uint64 = 0x2222222222222222 // '"'  broadcast
+	hasSpecialBSlash uint64 = 0x5C5C5C5C5C5C5C5C // '\\' broadcast
+	hasSpecial0x20   uint64 = 0x2020202020202020 // 0x20 broadcast
+)
+
 func hasSpecialChars(s string) bool {
-	// Branch prediction optimization: check most common cases first
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		// Most common special chars first
-		if c == '"' || c == '\\' {
+	i := 0
+	// 8-byte SWAR loop. We process the string in aligned-by-8 chunks
+	// from the head; the residual 0..7 bytes are handled by the tail
+	// loop below.
+	for i+8 <= len(s) {
+		// Hoist the bounds check: a single panic-or-pass at s[i+7]
+		// lets the compiler prove all the s[i..i+6] indexes below are
+		// in range and elide their per-access bounds checks.
+		_ = s[i+7]
+		// Pack 8 bytes into a single uint64 in little-endian order.
+		// On amd64/arm64 the compiler folds this whole expression into
+		// one unaligned 64-bit load, so the cost is one MOV — not eight.
+		// LE order is irrelevant to correctness because every predicate
+		// below is byte-wise (no inter-byte arithmetic semantics relied on).
+		v := uint64(s[i]) |
+			uint64(s[i+1])<<8 |
+			uint64(s[i+2])<<16 |
+			uint64(s[i+3])<<24 |
+			uint64(s[i+4])<<32 |
+			uint64(s[i+5])<<40 |
+			uint64(s[i+6])<<48 |
+			uint64(s[i+7])<<56
+
+		// --- Predicate 1: any byte < 0x20 (control character)?
+		//
+		// Per-byte we want b < 0x20. Subtracting 0x20 from every byte
+		// in parallel underflows exactly the bytes where b < 0x20, and
+		// underflow sets that byte's high bit. The "& ^v" step is what
+		// makes this safe in the presence of high-byte values: for any
+		// byte where the original was >= 0x80, ^v's high bit is 0, so
+		// we can't get a spurious match from a byte that already had
+		// its high bit set.
+		//
+		// Borrow caveat: subtraction is a real 64-bit subtract, so a
+		// borrow can propagate from a lower byte into a higher one and
+		// corrupt that higher byte's result. That can produce extra
+		// "matches" — but a borrow only originates from a byte that
+		// genuinely satisfied b < 0x20. So any cascaded false positive
+		// already coexists with a true positive, and the OR-then-test
+		// at the end still returns the correct boolean.
+		ctrl := (v - hasSpecial0x20) & ^v
+
+		// --- Predicate 2: any byte == '"' (0x22)?
+		//
+		// XOR with the broadcast pattern turns matching bytes into 0x00
+		// and leaves all other bytes non-zero. Then the standard
+		// haszero formula detects any zero byte. Same borrow caveat as
+		// above applies — and is harmless for the same reason.
+		q := v ^ hasSpecialQuote
+		qmask := (q - hasSpecialLo) & ^q
+
+		// --- Predicate 3: any byte == '\\' (0x5C)? Same shape as Predicate 2.
+		sl := v ^ hasSpecialBSlash
+		smask := (sl - hasSpecialLo) & ^sl
+
+		// Combine predicates: each byte's high bit in (ctrl|qmask|smask)
+		// is the disjunction of the three per-byte tests. ANDing with
+		// the high-bit mask isolates just those eight result bits, and
+		// a single non-zero test covers the whole 8-byte window in one
+		// branch. This is what lets SWAR overtake the byte loop: per
+		// byte we pay roughly one ALU op instead of one load + mask +
+		// branch.
+		if (ctrl|qmask|smask)&hasSpecialHi != 0 {
 			return true
 		}
-		// Control characters - less common
-		if c < 0x20 {
+		i += 8
+	}
+	// Tail: handle the 0..7 bytes that didn't fit into a full SWAR
+	// chunk. Setting up another SWAR pass for ≤ 7 bytes (masking the
+	// unread lanes) costs more than just doing the byte loop here, and
+	// at this point we've already amortized the SWAR setup across the
+	// head of the string anyway.
+	for ; i < len(s); i++ {
+		if charFlags[s[i]]&charEscape != 0 {
 			return true
 		}
 	}
@@ -404,119 +634,57 @@ func escapeStringSlowPath(dst []byte, s string) []byte {
 	return dst
 }
 
-func unescapeStringBestEffort(a arena.Arena, s string) string {
-	n := strings.IndexByte(s, '\\')
-	if n < 0 {
-		// Fast path - nothing to unescape.
-		return s
+func unescapeStringBestEffortInfo(a arena.Arena, s string) (string, bool) {
+	if strings.IndexByte(s, '\\') < 0 {
+		return s, hasSpecialChars(s)
 	}
+	n, _ := decodeStringBestEffort(nil, s)
+	buf := arena.AllocateSlice[byte](a, n, n)
+	_, needsEscape := decodeStringBestEffort(buf, s)
+	return b2s(buf), needsEscape
+}
 
-	// Estimate capacity to avoid frequent reallocations
-	estimatedCap := len(s) + 4
-	b := arena.AllocateSlice[byte](a, 0, estimatedCap)
-
-	// Add the initial part before the first escape
-	b = arena.SliceAppend(a, b, []byte(s[:n])...)
-	s = s[n+1:]
-
-	for len(s) > 0 {
-		ch := s[0]
-		s = s[1:]
-		switch ch {
-		case '"':
-			b = arena.SliceAppend(a, b, '"')
-		case '\\':
-			b = arena.SliceAppend(a, b, '\\')
-		case '/':
-			b = arena.SliceAppend(a, b, '/')
-		case 'b':
-			b = arena.SliceAppend(a, b, '\b')
-		case 'f':
-			b = arena.SliceAppend(a, b, '\f')
-		case 'n':
-			b = arena.SliceAppend(a, b, '\n')
-		case 'r':
-			b = arena.SliceAppend(a, b, '\r')
-		case 't':
-			b = arena.SliceAppend(a, b, '\t')
-		case 'u':
-			if len(s) < 4 {
-				// Too short escape sequence. Just store it unchanged.
-				b = arena.SliceAppend(a, b, []byte("\\u")...)
-				break
-			}
-			xs := s[:4]
-			x, err := strconv.ParseUint(xs, 16, 16)
-			if err != nil {
-				// Invalid escape sequence. Just store it unchanged.
-				b = arena.SliceAppend(a, b, []byte("\\u")...)
-				break
-			}
-			s = s[4:]
-			if !utf16.IsSurrogate(rune(x)) {
-				var buf [utf8.UTFMax]byte
-				n := utf8.EncodeRune(buf[:], rune(x))
-				b = arena.SliceAppend(a, b, buf[:n]...)
-				break
-			}
-
-			// Surrogate.
-			// See https://en.wikipedia.org/wiki/Universal_Character_Set_characters#Surrogates
-			if len(s) < 6 || s[0] != '\\' || s[1] != 'u' {
-				b = arena.SliceAppend(a, b, []byte("\\u")...)
-				b = arena.SliceAppend(a, b, []byte(xs)...)
-				break
-			}
-			x1, err := strconv.ParseUint(s[2:6], 16, 16)
-			if err != nil {
-				b = arena.SliceAppend(a, b, []byte("\\u")...)
-				b = arena.SliceAppend(a, b, []byte(xs)...)
-				break
-			}
-			r := utf16.DecodeRune(rune(x), rune(x1))
-			var buf [utf8.UTFMax]byte
-			rn := utf8.EncodeRune(buf[:], r)
-			b = arena.SliceAppend(a, b, buf[:rn]...)
-			s = s[6:]
-		default:
-			// Unknown escape sequence. Just store it unchanged.
-			b = arena.SliceAppend(a, b, '\\', ch)
-		}
-		n = strings.IndexByte(s, '\\')
-		if n < 0 {
-			b = arena.SliceAppend(a, b, []byte(s)...)
-			break
-		}
-		b = arena.SliceAppend(a, b, []byte(s[:n])...)
-		s = s[n+1:]
-	}
-	return b2s(b)
+func runeNeedsEscaping(r rune) bool {
+	return r == '"' || r == '\\' || r < 0x20
 }
 
 // parseRawKey is similar to parseRawString, but is optimized
 // for small-sized keys without escape sequences.
-func parseRawKey(s string) (string, string, error) {
+func parseRawKey(s string) (string, string, bool, error) {
 	for i := 0; i < len(s); i++ {
 		if s[i] == '"' {
 			// Fast path.
-			return s[:i], s[i+1:], nil
+			return s[:i], s[i+1:], false, nil
 		}
 		if s[i] == '\\' {
 			// Slow path.
-			return parseRawString(s)
+			return parseRawStringInfo(s)
 		}
 	}
-	return s, "", fmt.Errorf(`missing closing '"'`)
+	return s, "", false, errParseMissingCloseQuote
 }
 
-func parseRawString(s string) (string, string, error) {
+// parseRawStringInfo scans the JSON string payload starting immediately after
+// the opening quote.
+//
+// It returns:
+//   - raw: the substring between the opening and closing quotes, without the
+//     surrounding quote bytes
+//   - tail: the remaining input immediately after the closing quote
+//   - hasEscape: whether raw contains at least one backslash escape sequence
+//   - err: a non-nil error if no valid closing quote is found
+func parseRawStringInfo(s string) (string, string, bool, error) {
 	n := strings.IndexByte(s, '"')
 	if n < 0 {
-		return s, "", fmt.Errorf(`missing closing '"'`)
+		return s, "", false, errParseMissingCloseQuote
+	}
+	if strings.IndexByte(s[:n], '\\') < 0 {
+		// Fast path. No escape sequences before the closing quote.
+		return s[:n], s[n+1:], false, nil
 	}
 	if n == 0 || s[n-1] != '\\' {
-		// Fast path. No escaped ".
-		return s[:n], s[n+1:], nil
+		// Fast path. Escape sequences exist, but the closing quote isn't escaped.
+		return s[:n], s[n+1:], true, nil
 	}
 
 	// Slow path - possible escaped " found.
@@ -527,16 +695,16 @@ func parseRawString(s string) (string, string, error) {
 			i--
 		}
 		if uint(n-i)%2 == 0 {
-			return ss[:len(ss)-len(s)+n], s[n+1:], nil
+			return ss[:len(ss)-len(s)+n], s[n+1:], true, nil
 		}
 		s = s[n+1:]
 
 		n = strings.IndexByte(s, '"')
 		if n < 0 {
-			return ss, "", fmt.Errorf(`missing closing '"'`)
+			return ss, "", true, errParseMissingCloseQuote
 		}
 		if n == 0 || s[n-1] != '\\' {
-			return ss[:len(ss)-len(s)+n], s[n+1:], nil
+			return ss[:len(ss)-len(s)+n], s[n+1:], true, nil
 		}
 	}
 }
@@ -546,8 +714,7 @@ func parseRawNumber(s string) (string, string, error) {
 
 	// Find the end of the number.
 	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		if (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || ch == 'e' || ch == 'E' || ch == '+' {
+		if charFlags[s[i]]&charNumChar != 0 {
 			continue
 		}
 		if i == 0 || i == 1 && (s[0] == '-' || s[0] == '+') {
@@ -557,7 +724,7 @@ func parseRawNumber(s string) (string, string, error) {
 					return s[:i+3], s[i+3:], nil
 				}
 			}
-			return "", s, fmt.Errorf("unexpected char: %q", s[:1])
+			return "", s, errors.New("unexpected char: " + strconv.Quote(s[:1]))
 		}
 		ns := s[:i]
 		s = s[i:]
@@ -586,7 +753,7 @@ func (o *Object) MarshalTo(dst []byte) []byte {
 	dst = append(dst, '{')
 	for i, kv := range o.kvs {
 		if kv.keyUnescaped {
-			dst = escapeString(dst, kv.k)
+			dst = appendQuotedString(dst, kv.k, kv.keyNeedsEscape)
 		} else {
 			dst = append(dst, '"')
 			dst = append(dst, kv.k...)
@@ -600,6 +767,26 @@ func (o *Object) MarshalTo(dst []byte) []byte {
 	}
 	dst = append(dst, '}')
 	return dst
+}
+
+// marshalToClean is a MarshalTo fast path for objects whose own keys are
+// all escape-free. It skips the per-key escape check for THIS object, but
+// recurses into children via [Value.MarshalTo] so each child re-checks
+// its own noEscapeSubtree flag. That way a stale-true ancestor hint
+// (left behind by mutation through a sub-handle) cannot cause a dirty
+// descendant to be written out unescaped.
+func (o *Object) marshalToClean(dst []byte) []byte {
+	dst = append(dst, '{')
+	for i, kv := range o.kvs {
+		dst = append(dst, '"')
+		dst = append(dst, kv.k...)
+		dst = append(dst, '"', ':')
+		dst = kv.v.MarshalTo(dst)
+		if i != len(o.kvs)-1 {
+			dst = append(dst, ',')
+		}
+	}
+	return append(dst, '}')
 }
 
 // String returns string representation for the o.
@@ -619,13 +806,6 @@ func (o *Object) getKV(a arena.Arena) *kv {
 	}
 	o.kvs = arena.SliceAppend(a, o.kvs, arena.Allocate[kv](a))
 	return o.kvs[len(o.kvs)-1]
-}
-
-// unescapeKey unescapes a specific key.
-// Callers must check kv.keyUnescaped before calling.
-func (o *Object) unescapeKey(a arena.Arena, kv *kv) {
-	kv.k = unescapeStringBestEffort(a, kv.k)
-	kv.keyUnescaped = true
 }
 
 // Len returns the number of items in the o.
@@ -675,15 +855,29 @@ func (o *Object) Visit(f func(key []byte, v *Value)) {
 //
 // Cache-friendly layout: hot data first, compact structure
 type Value struct {
-	t Type     // HOT: accessed on every operation - 8 bytes
-	s string   // HOT: frequently accessed for strings/numbers - 16 bytes
-	a []*Value // HOT: frequently accessed for arrays - 24 bytes
-	o Object   // COLD: less frequently accessed - 25 bytes
-	// Total: 73 bytes - compact and cache-friendly
+	t                 Type // HOT: accessed on every operation
+	stringNeedsEscape bool // TypeString only: decoded string needs escaping on marshal
+	// noEscapeSubtree is an advisory hint: when true, no key or string value
+	// in this subtree required JSON escaping at the time of parse or the last
+	// call to RecomputeEscapeHint. false is always safe; consumers that fast
+	// path on true must tolerate stale-true on ancestors of mutations made
+	// through a sub-handle. See MUTATION CORRECTNESS in package docs.
+	noEscapeSubtree bool
+	s               string
+	a               []*Value
+	o               Object
 }
 
 // MarshalTo appends marshaled v to dst and returns the result.
 func (v *Value) MarshalTo(dst []byte) []byte {
+	// Fast path: if the entire subtree is known to be escape-free, emit
+	// each string/key literally without per-node escape checks. The hint
+	// is advisory — callers who mutate through a sub-handle and want the
+	// root hint to stay accurate must call [Value.RecomputeEscapeHint].
+	if v.noEscapeSubtree && (v.t == TypeObject || v.t == TypeArray || v.t == TypeString) {
+		v.debugVerifyEscapeHint()
+		return v.marshalToClean(dst)
+	}
 	switch v.t {
 	case TypeObject:
 		return v.o.MarshalTo(dst)
@@ -698,7 +892,7 @@ func (v *Value) MarshalTo(dst []byte) []byte {
 		dst = append(dst, ']')
 		return dst
 	case TypeString:
-		return escapeString(dst, v.s)
+		return appendQuotedString(dst, v.s, v.stringNeedsEscape)
 	case TypeNumber:
 		return append(dst, v.s...)
 	case TypeTrue:
@@ -708,7 +902,41 @@ func (v *Value) MarshalTo(dst []byte) []byte {
 	case TypeNull:
 		return append(dst, "null"...)
 	default:
-		panic(fmt.Errorf("BUG: unexpected Value type: %d", v.t))
+		panic("BUG: unexpected Value type: " + strconv.Itoa(int(v.t)))
+	}
+}
+
+// marshalToClean is a MarshalTo fast path for this node's own keys/string;
+// see [Object.marshalToClean] for the ancestor-stale rationale. Children of
+// objects and arrays are emitted via their own [Value.MarshalTo] so each
+// subtree re-checks its own hint.
+func (v *Value) marshalToClean(dst []byte) []byte {
+	switch v.t {
+	case TypeObject:
+		return v.o.marshalToClean(dst)
+	case TypeArray:
+		dst = append(dst, '[')
+		for i, vv := range v.a {
+			dst = vv.MarshalTo(dst)
+			if i != len(v.a)-1 {
+				dst = append(dst, ',')
+			}
+		}
+		return append(dst, ']')
+	case TypeString:
+		dst = append(dst, '"')
+		dst = append(dst, v.s...)
+		return append(dst, '"')
+	case TypeNumber:
+		return append(dst, v.s...)
+	case TypeTrue:
+		return append(dst, "true"...)
+	case TypeFalse:
+		return append(dst, "false"...)
+	case TypeNull:
+		return append(dst, "null"...)
+	default:
+		panic("BUG: unexpected Value type: " + strconv.Itoa(int(v.t)))
 	}
 }
 
@@ -773,7 +1001,7 @@ func (t Type) String() string {
 	// typeRawString is skipped intentionally,
 	// since it shouldn't be visible to user.
 	default:
-		panic(fmt.Errorf("BUG: unknown Value type: %d", t))
+		panic("BUG: unknown Value type: " + strconv.Itoa(int(t)))
 	}
 }
 
@@ -953,7 +1181,7 @@ func (v *Value) GetBool(keys ...string) bool {
 // Use GetObject if you don't need error handling.
 func (v *Value) Object() (*Object, error) {
 	if v.t != TypeObject {
-		return nil, fmt.Errorf("value doesn't contain object; it contains %s", v.Type())
+		return nil, errors.New("value doesn't contain object; it contains " + v.Type().String())
 	}
 	return &v.o, nil
 }
@@ -965,7 +1193,7 @@ func (v *Value) Object() (*Object, error) {
 // Use GetArray if you don't need error handling.
 func (v *Value) Array() ([]*Value, error) {
 	if v.t != TypeArray {
-		return nil, fmt.Errorf("value doesn't contain array; it contains %s", v.Type())
+		return nil, errors.New("value doesn't contain array; it contains " + v.Type().String())
 	}
 	return v.a, nil
 }
@@ -977,7 +1205,7 @@ func (v *Value) Array() ([]*Value, error) {
 // Use GetStringBytes if you don't need error handling.
 func (v *Value) StringBytes() ([]byte, error) {
 	if v.Type() != TypeString {
-		return nil, fmt.Errorf("value doesn't contain string; it contains %s", v.Type())
+		return nil, errors.New("value doesn't contain string; it contains " + v.Type().String())
 	}
 	return s2b(v.s), nil
 }
@@ -987,7 +1215,7 @@ func (v *Value) StringBytes() ([]byte, error) {
 // Use GetFloat64 if you don't need error handling.
 func (v *Value) Float64() (float64, error) {
 	if v.Type() != TypeNumber {
-		return 0, fmt.Errorf("value doesn't contain number; it contains %s", v.Type())
+		return 0, errors.New("value doesn't contain number; it contains " + v.Type().String())
 	}
 	return fastfloat.Parse(v.s)
 }
@@ -997,7 +1225,7 @@ func (v *Value) Float64() (float64, error) {
 // Use GetInt if you don't need error handling.
 func (v *Value) Int() (int, error) {
 	if v.Type() != TypeNumber {
-		return 0, fmt.Errorf("value doesn't contain number; it contains %s", v.Type())
+		return 0, errors.New("value doesn't contain number; it contains " + v.Type().String())
 	}
 	n, err := fastfloat.ParseInt64(v.s)
 	if err != nil {
@@ -1011,7 +1239,7 @@ func (v *Value) Int() (int, error) {
 // Use GetInt if you don't need error handling.
 func (v *Value) Uint() (uint, error) {
 	if v.Type() != TypeNumber {
-		return 0, fmt.Errorf("value doesn't contain number; it contains %s", v.Type())
+		return 0, errors.New("value doesn't contain number; it contains " + v.Type().String())
 	}
 	n, err := fastfloat.ParseUint64(v.s)
 	if err != nil {
@@ -1025,7 +1253,7 @@ func (v *Value) Uint() (uint, error) {
 // Use GetInt64 if you don't need error handling.
 func (v *Value) Int64() (int64, error) {
 	if v.Type() != TypeNumber {
-		return 0, fmt.Errorf("value doesn't contain number; it contains %s", v.Type())
+		return 0, errors.New("value doesn't contain number; it contains " + v.Type().String())
 	}
 	return fastfloat.ParseInt64(v.s)
 }
@@ -1035,7 +1263,7 @@ func (v *Value) Int64() (int64, error) {
 // Use GetInt64 if you don't need error handling.
 func (v *Value) Uint64() (uint64, error) {
 	if v.Type() != TypeNumber {
-		return 0, fmt.Errorf("value doesn't contain number; it contains %s", v.Type())
+		return 0, errors.New("value doesn't contain number; it contains " + v.Type().String())
 	}
 	return fastfloat.ParseUint64(v.s)
 }
@@ -1050,11 +1278,11 @@ func (v *Value) Bool() (bool, error) {
 	if v.t == TypeFalse {
 		return false, nil
 	}
-	return false, fmt.Errorf("value doesn't contain bool; it contains %s", v.Type())
+	return false, errors.New("value doesn't contain bool; it contains " + v.Type().String())
 }
 
 var (
-	valueTrue  = &Value{t: TypeTrue}
-	valueFalse = &Value{t: TypeFalse}
-	valueNull  = &Value{t: TypeNull}
+	valueTrue  = &Value{t: TypeTrue, noEscapeSubtree: true}
+	valueFalse = &Value{t: TypeFalse, noEscapeSubtree: true}
+	valueNull  = &Value{t: TypeNull, noEscapeSubtree: true}
 )

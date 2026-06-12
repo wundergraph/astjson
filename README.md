@@ -160,7 +160,8 @@ fmt.Println(v) // {"a":{"b":{"c":42}}}
 
 `MergeValues` recursively merges two values. For objects, keys from `b` are
 added to or replace keys in `a`. For arrays, elements are merged pairwise
-(arrays must have equal length). For scalars, `b` replaces `a` when they differ.
+(arrays must have equal length). For scalars, `b` replaces `a` unconditionally —
+no value comparison is performed.
 
 ```go
 a := arena.NewMonotonicArena()
@@ -168,7 +169,7 @@ var p astjson.Parser
 base, _ := p.ParseWithArena(a, `{"name": "alice", "age": 30}`)
 overlay, _ := p.ParseWithArena(a, `{"age": 31, "email": "alice@example.com"}`)
 
-merged, changed, err := astjson.MergeValues(a, base, overlay)
+merged, err := astjson.MergeValues(a, base, overlay)
 fmt.Println(merged) // {"name":"alice","age":31,"email":"alice@example.com"}
 ```
 
@@ -176,7 +177,7 @@ fmt.Println(merged) // {"name":"alice","age":31,"email":"alice@example.com"}
 
 ```go
 extra, _ := p.ParseWithArena(a, `"1.0"`)
-merged, _, _ = astjson.MergeValuesWithPath(a, base, extra, "metadata", "version")
+merged, _ = astjson.MergeValuesWithPath(a, base, extra, "metadata", "version")
 // equivalent to merging {"metadata":{"version":"1.0"}} into base
 ```
 
@@ -224,18 +225,19 @@ s := v.String()
 
 ### DeepCopy
 
-`DeepCopy` creates a complete copy of a value tree on the given arena. This is
+`(*Parser).DeepCopy` creates a complete copy of a value tree on the given arena. This is
 the safe way to insert heap-allocated values into arena-allocated containers:
 
 ```go
 a := arena.NewMonotonicArena()
 obj := astjson.ObjectValue(a)
+var parser astjson.Parser
 
 heapVal, _ := astjson.Parse(`{"nested": "data"}`)
-obj.Set(a, "key", astjson.DeepCopy(a, heapVal))  // safe: copy lives in arena
+obj.Set(a, "key", parser.DeepCopy(a, heapVal))  // safe: copy lives in arena
 ```
 
-When `a` is nil, `DeepCopy` returns the value unchanged (no-op in heap mode).
+When `a` is nil, `parser.DeepCopy` returns the value unchanged (no-op in heap mode).
 
 
 ## GC & Arena Safety
@@ -273,7 +275,7 @@ caller's responsibility when inserting values across allocation boundaries.
 > unless another GC-visible reference keeps it alive.**
 
 If the only reference to a heap Value lives in arena memory, the GC cannot see
-it and may collect it, causing a use-after-free. Use `DeepCopy` to copy the
+it and may collect it, causing a use-after-free. Use `parser.DeepCopy` to copy the
 value onto the arena first.
 
 **Unsafe:**
@@ -284,11 +286,12 @@ arenaObj.Set(a, "key", heapVal)               // UNSAFE: GC can't see this ref
 heapVal = nil                                 // GC may collect it
 ```
 
-**Safe — use DeepCopy:**
+**Safe — use parser.DeepCopy:**
 ```go
 arenaObj := astjson.ObjectValue(a)
+var parser astjson.Parser
 heapVal := astjson.StringValue(nil, "hello")
-arenaObj.Set(a, "key", astjson.DeepCopy(a, heapVal))  // safe: copy lives in arena
+arenaObj.Set(a, "key", parser.DeepCopy(a, heapVal))  // safe: copy lives in arena
 ```
 
 **Also safe — all values from the same arena:**
@@ -339,9 +342,11 @@ resetting one arena while the other is still in use causes silent corruption.
   * **One arena per unit of work.** Create an arena at the start of a request,
     parse and build values on it, serialize the result, then let the arena be
     collected. This gives you a clear, bounded lifetime.
-  * **Use `DeepCopy` at boundaries.** When inserting a value from an unknown
+  * **Use `astjson.DeepCopy` at boundaries.** When inserting a value from an unknown
     source (different arena, heap, parsed separately) into an arena container,
-    wrap it in `DeepCopy(a, val)`. This is a no-op when `a` is nil.
+    wrap it in `astjson.DeepCopy(a, val)`. The copy is always independent —
+    with a non-nil arena it is arena-allocated; with a nil arena it is
+    heap-allocated.
   * **Prefer arena mode for hot paths.** Arena mode avoids per-Value heap
     allocations, reducing GC pause time in high-throughput services.
   * **Use heap mode for simplicity.** If GC pressure is not a concern, pass
@@ -496,7 +501,7 @@ BenchmarkValidate/twitter/fastjson       	    2000	   1036796 ns/op	 609.10 MB/s
          beyond the next `Parser.Parse` / `Scanner.Next` call.
        * Make sure you don't access `astjson` objects from concurrently running goroutines.
        * If using arena mode, read the [GC & Arena Safety](#gc--arena-safety) section carefully.
-         Mixing heap and arena values without `DeepCopy` causes silent use-after-free.
+         Mixing heap and arena values without `parser.DeepCopy` causes silent use-after-free.
        * Build and run your program with [-race](https://golang.org/doc/articles/race_detector.html) flag.
          Make sure the race detector detects zero races.
        * If your program continues crashing after fixing the issues above, [file a bug](https://github.com/wundergraph/astjson/issues/new).

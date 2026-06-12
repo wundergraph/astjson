@@ -429,7 +429,7 @@ func TestArenaGCSafety_MergeValues(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse right: %s", i, err)
 		}
-		merged, _, err := MergeValues(a, left, right)
+		merged, err := MergeValues(a, left, right)
 		if err != nil {
 			t.Fatalf("iteration %d: merge: %s", i, err)
 		}
@@ -475,7 +475,7 @@ func TestArenaGCSafety_MergeValuesWithPath(t *testing.T) {
 			t.Fatalf("iteration %d: parse left: %s", i, err)
 		}
 		right := StringValue(a, heapString("merged", i))
-		merged, _, err := MergeValuesWithPath(a, left, right, "data", "nested")
+		merged, err := MergeValuesWithPath(a, left, right, "data", "nested")
 		if err != nil {
 			t.Fatalf("iteration %d: merge: %s", i, err)
 		}
@@ -976,7 +976,7 @@ func TestArenaGCSafety_ComplexWorkflow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse extra: %s", i, err)
 		}
-		merged, _, err := MergeValues(a, base, extra)
+		merged, err := MergeValues(a, base, extra)
 		if err != nil {
 			t.Fatalf("iteration %d: merge: %s", i, err)
 		}
@@ -1188,6 +1188,7 @@ func TestArenaGCSafety_StringValueBytes_HeapInput(t *testing.T) {
 func TestArenaGCSafety_DeepCopy_ObjectSet(t *testing.T) {
 	old := debug.SetGCPercent(1)
 	defer debug.SetGCPercent(old)
+	var parser Parser
 
 	for i := 0; i < gcTestIterations; i++ {
 		a := arena.NewMonotonicArena()
@@ -1196,7 +1197,7 @@ func TestArenaGCSafety_DeepCopy_ObjectSet(t *testing.T) {
 		heapVal := StringValue(nil, heapString("safe", i))
 
 		// DeepCopy copies heapVal into arena a before storing.
-		obj.Set(a, "key", DeepCopy(a, heapVal))
+		obj.Set(a, "key", parser.DeepCopy(a, heapVal))
 
 		// Drop the only external reference to heapVal.
 		heapVal = nil //nolint:ineffassign
@@ -1221,6 +1222,7 @@ func TestArenaGCSafety_DeepCopy_ObjectSet(t *testing.T) {
 func TestArenaGCSafety_DeepCopy_SetArrayItem(t *testing.T) {
 	old := debug.SetGCPercent(1)
 	defer debug.SetGCPercent(old)
+	var parser Parser
 
 	for i := 0; i < gcTestIterations; i++ {
 		a := arena.NewMonotonicArena()
@@ -1228,7 +1230,7 @@ func TestArenaGCSafety_DeepCopy_SetArrayItem(t *testing.T) {
 		arr := ArrayValue(a)
 		heapVal := IntValue(nil, i)
 
-		arr.SetArrayItem(a, 0, DeepCopy(a, heapVal))
+		arr.SetArrayItem(a, 0, parser.DeepCopy(a, heapVal))
 
 		heapVal = nil //nolint:ineffassign
 		forceGC()
@@ -1254,6 +1256,7 @@ func TestArenaGCSafety_DeepCopy_SetArrayItem(t *testing.T) {
 func TestArenaGCSafety_DeepCopy_NestedObject(t *testing.T) {
 	old := debug.SetGCPercent(1)
 	defer debug.SetGCPercent(old)
+	var parser Parser
 
 	for i := 0; i < gcTestIterations; i++ {
 		a := arena.NewMonotonicArena()
@@ -1268,7 +1271,7 @@ func TestArenaGCSafety_DeepCopy_NestedObject(t *testing.T) {
 		heapObj.Set(nil, "scores", heapArr)
 
 		arenaContainer := ObjectValue(a)
-		arenaContainer.Set(a, "data", DeepCopy(a, heapObj))
+		arenaContainer.Set(a, "data", parser.DeepCopy(a, heapObj))
 
 		// Drop all heap references.
 		heapObj = nil //nolint:ineffassign
@@ -1298,22 +1301,33 @@ func TestArenaGCSafety_DeepCopy_NestedObject(t *testing.T) {
 	}
 }
 
-// TestArenaGCSafety_DeepCopy_NilArena verifies that DeepCopy(nil, v) is a
-// no-op and returns v unchanged.
+// TestArenaGCSafety_DeepCopy_NilArena verifies that parser.DeepCopy(nil, v)
+// produces an independent heap-allocated deep copy — mutating the copy must
+// not affect the source.
 func TestArenaGCSafety_DeepCopy_NilArena(t *testing.T) {
-	v := StringValue(nil, "hello")
-	got := DeepCopy(nil, v)
-	if got != v {
-		t.Fatal("DeepCopy(nil, v) must return v unchanged")
+	src := MustParse(`{"key":"value"}`)
+	var parser Parser
+	cp := parser.DeepCopy(nil, src)
+	if cp == src {
+		t.Fatal("DeepCopy(nil, v) must not return the same pointer")
+	}
+	// Mutate the copy — source must be untouched.
+	cp.Set(nil, "key", StringValue(nil, "mutated"))
+	if string(src.MarshalTo(nil)) != `{"key":"value"}` {
+		t.Fatalf("source mutated by copy; source=%s", src.MarshalTo(nil))
+	}
+	if string(cp.MarshalTo(nil)) != `{"key":"mutated"}` {
+		t.Fatalf("copy mutation did not stick; copy=%s", cp.MarshalTo(nil))
 	}
 }
 
-// TestArenaGCSafety_DeepCopy_NilValue verifies that DeepCopy(a, nil) returns nil.
+// TestArenaGCSafety_DeepCopy_NilValue verifies that parser.DeepCopy(a, nil) returns nil.
 func TestArenaGCSafety_DeepCopy_NilValue(t *testing.T) {
 	a := arena.NewMonotonicArena()
-	got := DeepCopy(a, nil)
+	var parser Parser
+	got := parser.DeepCopy(a, nil)
 	if got != nil {
-		t.Fatal("DeepCopy(a, nil) must return nil")
+		t.Fatal("parser.DeepCopy(a, nil) must return nil")
 	}
 	runtime.KeepAlive(a)
 }
@@ -1323,7 +1337,8 @@ func TestArenaGCSafety_DeepCopy_NilValue(t *testing.T) {
 func TestArenaGCSafety_DeepCopy_EmptyObject(t *testing.T) {
 	a := arena.NewMonotonicArena()
 	obj := ObjectValue(a)
-	cp := DeepCopy(a, obj)
+	var parser Parser
+	cp := parser.DeepCopy(a, obj)
 	if cp.Type() != TypeObject {
 		t.Fatalf("expected TypeObject, got %v", cp.Type())
 	}
@@ -1423,7 +1438,7 @@ func TestArenaGCSafety_MergeValues_ScalarReplacement(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse right: %s", i, err)
 		}
-		merged, _, err := MergeValues(a, left, right)
+		merged, err := MergeValues(a, left, right)
 		if err != nil {
 			t.Fatalf("iteration %d: merge: %s", i, err)
 		}
@@ -1467,7 +1482,7 @@ func TestArenaGCSafety_MergeValues_RecursiveObjects(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse right: %s", i, err)
 		}
-		merged, _, err := MergeValues(a, left, right)
+		merged, err := MergeValues(a, left, right)
 		if err != nil {
 			t.Fatalf("iteration %d: merge: %s", i, err)
 		}
@@ -1525,12 +1540,9 @@ func TestArenaGCSafety_MergeValues_EmptyArrays(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse right: %s", i, err)
 		}
-		merged, changed, err := MergeValues(a, left, right)
+		merged, err := MergeValues(a, left, right)
 		if err != nil {
 			t.Fatalf("iteration %d: merge empty+full: %s", i, err)
-		}
-		if !changed {
-			t.Fatalf("iteration %d: expected changed=true for empty left", i)
 		}
 		forceGC()
 		arr := merged.GetArray()
@@ -1550,12 +1562,9 @@ func TestArenaGCSafety_MergeValues_EmptyArrays(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse right2: %s", i, err)
 		}
-		merged2, changed2, err := MergeValues(a, left2, right2)
+		merged2, err := MergeValues(a, left2, right2)
 		if err != nil {
 			t.Fatalf("iteration %d: merge full+empty: %s", i, err)
-		}
-		if changed2 {
-			t.Fatalf("iteration %d: expected changed=false for empty right", i)
 		}
 		forceGC()
 		arr2 := merged2.GetArray()
@@ -1582,12 +1591,9 @@ func TestArenaGCSafety_MergeValues_NullHandling(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iteration %d: parse right: %s", i, err)
 		}
-		merged, changed, err := MergeValues(a, left, right)
+		merged, err := MergeValues(a, left, right)
 		if err != nil {
 			t.Fatalf("iteration %d: merge: %s", i, err)
-		}
-		if changed {
-			t.Fatalf("iteration %d: expected changed=false for null right on object left", i)
 		}
 		forceGC()
 
