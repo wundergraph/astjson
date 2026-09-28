@@ -1,7 +1,9 @@
 package astjson
 
 import (
+	"encoding/binary"
 	"fmt"
+	"math/bits"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -337,71 +339,52 @@ func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 	}
 }
 
+// escapes[c] is the escape sequence for c in a JSON string, or "" if c needs none.
+var escapes = func() (t [256]string) {
+	for c := range 0x20 {
+		t[c] = fmt.Sprintf(`\u%04x`, c)
+	}
+	t['\b'], t['\t'], t['\n'], t['\f'], t['\r'] = `\b`, `\t`, `\n`, `\f`, `\r`
+	t['"'], t['\\'] = `\"`, `\\`
+	return t
+}()
+
 func escapeString(dst []byte, s string) []byte {
-	if !hasSpecialChars(s) {
-		// Fast path - nothing to escape.
-		dst = append(dst, '"')
-		dst = append(dst, s...)
-		dst = append(dst, '"')
-		return dst
+	dst = append(dst, '"')
+	for i := indexSpecialChar(s); i >= 0; i = indexSpecialChar(s) {
+		dst = append(dst, s[:i]...)
+		dst = append(dst, escapes[s[i]]...)
+		s = s[i+1:]
 	}
-
-	// Slow path.
-	return escapeStringSlowPath(dst, s)
+	dst = append(dst, s...)
+	return append(dst, '"')
 }
 
-func hasSpecialChars(s string) bool {
-	// Branch prediction optimization: check most common cases first
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		// Most common special chars first
-		if c == '"' || c == '\\' {
-			return true
+// indexSpecialChar returns the index of the first byte of s that must be
+// escaped ('"', '\\' or a control character), or -1 if there is none.
+func indexSpecialChar(s string) int {
+	if len(s) < 8 {
+		for i := range len(s) {
+			if c := s[i]; c == '"' || c == '\\' || c < 0x20 {
+				return i
+			}
 		}
-		// Control characters - less common
-		if c < 0x20 {
-			return true
+		return -1
+	}
+	// Check 8 bytes at a time: x^(lo*c) has a zero byte where x has c,
+	// (v-lo)&^v&hi flags the zero bytes of v and (x-lo*0x20)&^x&hi the bytes of
+	// x below 0x20. A borrow can flag bytes after a match but not before, so
+	// the first flag is exact.
+	const lo, hi = 0x0101010101010101, 0x8080808080808080
+	for i := 0; i < len(s); i += 8 {
+		i = min(i, len(s)-8) // the last word may recheck bytes without a match
+		x := binary.LittleEndian.Uint64(s2b(s[i:]))
+		q, b := x^(lo*'"'), x^(lo*'\\')
+		if m := ((q-lo)&^q | (b-lo)&^b | (x-lo*0x20)&^x) & hi; m != 0 {
+			return i + bits.TrailingZeros64(m)/8
 		}
 	}
-	return false
-}
-
-func escapeStringSlowPath(dst []byte, s string) []byte {
-	dst = append(dst, '"')
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c == '"':
-			// quotation mark
-			dst = append(dst, []byte{'\\', '"'}...)
-		case c == '\\':
-			// reverse solidus
-			dst = append(dst, []byte{'\\', '\\'}...)
-		case c >= 0x20:
-			// default, rest below are control chars
-			dst = append(dst, c)
-		case c == 0x08:
-			dst = append(dst, []byte{'\\', 'b'}...)
-		case c < 0x09:
-			dst = append(dst, []byte{'\\', 'u', '0', '0', '0', '0' + c}...)
-		case c == 0x09:
-			dst = append(dst, []byte{'\\', 't'}...)
-		case c == 0x0a:
-			dst = append(dst, []byte{'\\', 'n'}...)
-		case c == 0x0c:
-			dst = append(dst, []byte{'\\', 'f'}...)
-		case c == 0x0d:
-			dst = append(dst, []byte{'\\', 'r'}...)
-		case c < 0x10:
-			dst = append(dst, []byte{'\\', 'u', '0', '0', '0', 0x57 + c}...)
-		case c < 0x1a:
-			dst = append(dst, []byte{'\\', 'u', '0', '0', '1', 0x20 + c}...)
-		case c < 0x20: // lint:ignore
-			dst = append(dst, []byte{'\\', 'u', '0', '0', '1', 0x47 + c}...)
-		}
-	}
-	dst = append(dst, '"')
-	return dst
+	return -1
 }
 
 func unescapeStringBestEffort(a arena.Arena, s string) string {

@@ -1537,8 +1537,8 @@ func TestParseValueEdgeCases(t *testing.T) {
 	})
 }
 
-// TestEscapeStringSlowPath tests the slow path of string escaping
-func TestEscapeStringSlowPath(t *testing.T) {
+// TestEscapeStringSpecialChars tests escaping of special characters
+func TestEscapeStringSpecialChars(t *testing.T) {
 	t.Run("various control characters", func(t *testing.T) {
 		testCases := []struct {
 			input    string
@@ -1558,12 +1558,87 @@ func TestEscapeStringSlowPath(t *testing.T) {
 		}
 
 		for _, tc := range testCases {
-			result := escapeStringSlowPath(nil, tc.input)
+			result := escapeString(nil, tc.input)
 			if string(result) != tc.expected {
-				t.Errorf("escapeStringSlowPath(%q) = %q, want %q", tc.input, string(result), tc.expected)
+				t.Errorf("escapeString(%q) = %q, want %q", tc.input, string(result), tc.expected)
 			}
 		}
 	})
+}
+
+// escapeStringV110 is escapeStringSlowPath of v1.1.0, which produced the output
+// of escapeString for every input. The tests below use it as the reference.
+func escapeStringV110(dst []byte, s string) []byte {
+	dst = append(dst, '"')
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '"':
+			// quotation mark
+			dst = append(dst, []byte{'\\', '"'}...)
+		case c == '\\':
+			// reverse solidus
+			dst = append(dst, []byte{'\\', '\\'}...)
+		case c >= 0x20:
+			// default, rest below are control chars
+			dst = append(dst, c)
+		case c == 0x08:
+			dst = append(dst, []byte{'\\', 'b'}...)
+		case c < 0x09:
+			dst = append(dst, []byte{'\\', 'u', '0', '0', '0', '0' + c}...)
+		case c == 0x09:
+			dst = append(dst, []byte{'\\', 't'}...)
+		case c == 0x0a:
+			dst = append(dst, []byte{'\\', 'n'}...)
+		case c == 0x0c:
+			dst = append(dst, []byte{'\\', 'f'}...)
+		case c == 0x0d:
+			dst = append(dst, []byte{'\\', 'r'}...)
+		case c < 0x10:
+			dst = append(dst, []byte{'\\', 'u', '0', '0', '0', 0x57 + c}...)
+		case c < 0x1a:
+			dst = append(dst, []byte{'\\', 'u', '0', '0', '1', 0x20 + c}...)
+		case c < 0x20: // lint:ignore
+			dst = append(dst, []byte{'\\', 'u', '0', '0', '1', 0x47 + c}...)
+		}
+	}
+	dst = append(dst, '"')
+	return dst
+}
+
+func testEscapeString(t *testing.T, s string) {
+	t.Helper()
+	if got, want := string(escapeString(nil, s)), string(escapeStringV110(nil, s)); got != want {
+		t.Fatalf("escapeString(%q) = %q, want %q", s, got, want)
+	}
+}
+
+// TestEscapeStringAllBytes puts every byte value at every position of strings
+// up to three words long, alone and after a '"' at every earlier position, so
+// that the scan restarts after an escape at every offset within a word.
+func TestEscapeStringAllBytes(t *testing.T) {
+	// Bytes next to the special ones, in value or in a single bit.
+	clean := strings.Repeat("a !#[]~\x7f\x80\xa2\xdc\xff", 3)
+	for n := range 25 {
+		for q := -1; q < n; q++ {
+			for p := q + 1; p < n; p++ {
+				b := []byte(clean[:n])
+				if q >= 0 {
+					b[q] = '"'
+				}
+				for c := range 256 {
+					b[p] = byte(c)
+					testEscapeString(t, string(b))
+				}
+			}
+		}
+	}
+}
+
+func FuzzEscapeString(f *testing.F) {
+	f.Add("")
+	f.Add("a\"b\\c\x00\x08\t\n\x0b\f\r\x1f\x7f\u2028\xff 0123456789")
+	f.Fuzz(testEscapeString)
 }
 
 // TestUnescapeStringBestEffortEdgeCases tests edge cases in unescaping
@@ -1806,8 +1881,8 @@ func TestUintEdgeCases(t *testing.T) {
 	})
 }
 
-// TestEscapeStringSlowPathMore tests more edge cases in escapeStringSlowPath
-func TestEscapeStringSlowPathMore(t *testing.T) {
+// TestEscapeStringSpecialCharsMore tests more edge cases in escapeString
+func TestEscapeStringSpecialCharsMore(t *testing.T) {
 	t.Run("more control character ranges", func(t *testing.T) {
 		testCases := []struct {
 			input    string
@@ -1823,9 +1898,9 @@ func TestEscapeStringSlowPathMore(t *testing.T) {
 		}
 
 		for _, tc := range testCases {
-			result := escapeStringSlowPath(nil, tc.input)
+			result := escapeString(nil, tc.input)
 			if string(result) != tc.expected {
-				t.Errorf("escapeStringSlowPath(%q) = %q, want %q", tc.input, string(result), tc.expected)
+				t.Errorf("escapeString(%q) = %q, want %q", tc.input, string(result), tc.expected)
 			}
 		}
 	})
