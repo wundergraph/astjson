@@ -139,13 +139,12 @@ func deepCopyObject(a arena.Arena, o *Object) Object {
 	if len(o.kvs) == 0 {
 		return result
 	}
-	result.kvs = arena.AllocateSlice[*kv](a, len(o.kvs), len(o.kvs))
+	result.kvs = arena.AllocateSlice[kv](a, len(o.kvs), len(o.kvs))
 	for i, entry := range o.kvs {
-		newKv := arena.Allocate[kv](a)
+		newKv := &result.kvs[i]
 		newKv.k = arenaString(a, entry.k)
 		newKv.keyUnescaped = true
 		newKv.v = DeepCopy(a, entry.v)
-		result.kvs[i] = newKv
 	}
 	return result
 }
@@ -199,8 +198,6 @@ func DeduplicateObjectKeysRecursively(v *Value) {
 		n++
 		DeduplicateObjectKeysRecursively(kv.v)
 	}
-	for i := n; i < len(o.kvs); i++ {
-		o.kvs[i] = nil // clear trailing slots for GC
-	}
+	clear(o.kvs[n:]) // clear trailing slots for GC
 	o.kvs = o.kvs[:n]
 }

@@ -612,7 +612,7 @@ func TestObjectSetWithUnescapedKey(t *testing.T) {
 	// When Set iterates over existing keys, it should call unescapeKey.
 	a := arena.NewMonotonicArena()
 	o := &Object{}
-	entry := &kv{
+	entry := kv{
 		k:            `hello`,
 		v:            valueNull,
 		keyUnescaped: false,

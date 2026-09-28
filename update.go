@@ -1,6 +1,7 @@
 package astjson
 
 import (
+	"slices"
 	"strconv"
 
 	"github.com/wundergraph/go-arena"
@@ -15,8 +16,7 @@ func (o *Object) Del(key string) {
 	// so direct comparison is sufficient.
 	for i, kv := range o.kvs {
 		if kv.k == key {
-			o.kvs = append(o.kvs[:i], o.kvs[i+1:]...)
-			o.kvs[:len(o.kvs)+1][len(o.kvs)] = nil // clear hidden slot for GC
+			o.kvs = slices.Delete(o.kvs, i, i+1) // also clears the hidden slot for GC
 			return
 		}
 	}
@@ -62,7 +62,7 @@ func (o *Object) Set(a arena.Arena, key string, value *Value) {
 	// Try substituting already existing entry with the given key.
 	for i := range o.kvs {
 		if !o.kvs[i].keyUnescaped {
-			o.unescapeKey(a, o.kvs[i])
+			o.unescapeKey(a, &o.kvs[i])
 		}
 		if o.kvs[i].k == key {
 			o.kvs[i].v = value

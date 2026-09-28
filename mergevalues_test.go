@@ -319,7 +319,7 @@ func TestMergeValues(t *testing.T) {
 		left := MustParse(`{"foo":1}`)
 
 		right := &Value{t: TypeObject}
-		entry := &kv{
+		entry := kv{
 			k:            `bar`,
 			v:            MustParse(`2`),
 			keyUnescaped: false,

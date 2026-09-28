@@ -259,7 +259,7 @@ containing no pointers — it never scans inside them. This means **any pointer
 stored in arena memory is invisible to the GC**. This includes:
 
   * `Value.a` (`[]*Value`) — array element pointers
-  * `Object.kvs` (`[]*kv`) — key-value entry pointers
+  * `Object.kvs` (`[]kv`) — slice pointer to the inline key-value entries
   * `kv.v` (`*Value`) — value pointers inside object entries
   * `Value.s` / `kv.k` (`string`) — string data pointers
 

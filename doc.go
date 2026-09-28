@@ -53,7 +53,7 @@ see them, so heap string references are safe.
 
 The noscan property extends beyond string data to all pointer fields within
 arena-allocated structs. Because arena buffers are raw []byte allocations, the
-GC does not trace pointer fields such as Value.a ([]*Value), Object.kvs ([]*kv),
+GC does not trace pointer fields such as Value.a ([]*Value), Object.kvs ([]kv),
 or kv.v (*Value) that live inside arena memory.
 
 This means storing a heap-allocated *Value into an arena-allocated container is

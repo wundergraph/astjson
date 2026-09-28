@@ -1228,6 +1228,21 @@ func TestParseBigObject(t *testing.T) {
 	}
 }
 
+func TestParseAllocs(t *testing.T) {
+	// One allocation per non-singleton Value (7) plus one backing slice per
+	// object and array (3): containers with up to 4 entries never grow and
+	// object entries are stored inline.
+	const s = `{"a":[1,2,3],"b":"x","c":{"d":true},"e":null}`
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, err := Parse(s); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+	})
+	if allocs != 10 {
+		t.Fatalf("unexpected allocs per Parse; got %v; want 10", allocs)
+	}
+}
+
 func TestParseGetConcurrent(t *testing.T) {
 	concurrency := 10
 	ch := make(chan error, concurrency)
@@ -2196,7 +2211,7 @@ func TestObjectMarshalToRawKey(t *testing.T) {
 	// Construct an object with a key that hasn't been unescaped (keyUnescaped=false).
 	// In this case MarshalTo should emit the raw key wrapped in quotes without escaping.
 	o := &Object{}
-	entry := &kv{
+	entry := kv{
 		k:             `already\"escaped`,
 		v:             valueNull,
 		keyUnescaped:  false,

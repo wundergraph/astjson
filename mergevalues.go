@@ -52,7 +52,7 @@ func MergeValues(ar arena.Arena, a, b *Value) (v *Value, changed bool, err error
 		// Unescape keys as needed during iteration
 		for i := range bo.kvs {
 			if !bo.kvs[i].keyUnescaped {
-				bo.unescapeKey(ar, bo.kvs[i])
+				bo.unescapeKey(ar, &bo.kvs[i])
 			}
 		}
 		for i := range bo.kvs {

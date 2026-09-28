@@ -259,7 +259,7 @@ func parseArray(a arena.Arena, s string, depth int) (*Value, string, error) {
 			return nil, s, fmt.Errorf("cannot parse array value: %s", err)
 		}
 		if arr.a == nil {
-			arr.a = arena.AllocateSlice[*Value](a, 1, 1)
+			arr.a = arena.AllocateSlice[*Value](a, 1, 4)
 			arr.a[0] = v
 		} else {
 			arr.a = arena.SliceAppend(a, arr.a, v)
@@ -562,7 +562,7 @@ func parseRawNumber(s string) (string, string, error) {
 //
 // Cache-friendly layout: hot data first
 type Object struct {
-	kvs []*kv // HOT: frequently accessed - 24 bytes
+	kvs []kv // HOT: frequently accessed - 24 bytes
 	// Total: 24 bytes - compact and cache-friendly
 }
 
@@ -602,12 +602,14 @@ func (o *Object) String() string {
 	return b2s(b)
 }
 
+// getKV appends a zero kv to o and returns a pointer to it. The pointer is
+// only valid until the next append to o.kvs.
 func (o *Object) getKV(a arena.Arena) *kv {
 	if o.kvs == nil {
-		o.kvs = arena.AllocateSlice[*kv](a, 0, 1)
+		o.kvs = arena.AllocateSlice[kv](a, 0, 4)
 	}
-	o.kvs = arena.SliceAppend(a, o.kvs, arena.Allocate[kv](a))
-	return o.kvs[len(o.kvs)-1]
+	o.kvs = arena.SliceAppend(a, o.kvs, kv{})
+	return &o.kvs[len(o.kvs)-1]
 }
 
 // unescapeKey unescapes a specific key.
