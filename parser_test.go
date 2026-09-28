@@ -1,6 +1,7 @@
 package astjson
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -87,7 +88,20 @@ func TestUnescapeStringBestEffort(t *testing.T) {
 		testUnescapeStringBestEffort(t, `foo\qwe`, `foo\qwe`)
 		testUnescapeStringBestEffort(t, `\"x\uyz\"`, `"x\uyz"`)
 		testUnescapeStringBestEffort(t, `\u12\"пролw`, `\u12"пролw`)
-		testUnescapeStringBestEffort(t, `п\ud83eи`, "п\\ud83eи")
+		testUnescapeStringBestEffort(t, `п\ud83eи`, "п\uFFFDи")
+	})
+
+	t.Run("surrogates like encoding/json", func(t *testing.T) {
+		for _, s := range []string{
+			`\uD800`, `a\uDC00b`, `\uD800A`, `\uD800\u0041`, `\uDC00\uD800`, `\uD800\uD800\uDC00`,
+			`\ud83e\u1234`, `\uD800\"`, `x\uD800\\`, `\uD83D\uDE00`, `\uDBFF\uDFFF`,
+		} {
+			var want string
+			if err := json.Unmarshal([]byte(`"`+s+`"`), &want); err != nil {
+				t.Fatalf("encoding/json rejected %q: %s", s, err)
+			}
+			testUnescapeStringBestEffort(t, s, want)
+		}
 	})
 }
 
@@ -1677,16 +1691,15 @@ func TestUnescapeStringBestEffortEdgeCases(t *testing.T) {
 
 	t.Run("incomplete surrogate pair", func(t *testing.T) {
 		result := unescapeStringBestEffort(nil, "\\ud83e")
-		if result != "\\ud83e" {
-			t.Errorf("unescapeStringBestEffort(\"\\ud83e\") = %q, want %q", result, "\\ud83e")
+		if result != "\uFFFD" {
+			t.Errorf("unescapeStringBestEffort(\"\\ud83e\") = %q, want %q", result, "\uFFFD")
 		}
 	})
 
 	t.Run("invalid surrogate pair", func(t *testing.T) {
 		result := unescapeStringBestEffort(nil, "\\ud83e\\u1234")
-		// The function actually processes this as a valid surrogate pair, so we need to check the actual behavior
-		if len(result) == 0 {
-			t.Errorf("unescapeStringBestEffort(\"\\ud83e\\u1234\") returned empty string")
+		if result != "\uFFFD\u1234" {
+			t.Errorf("unescapeStringBestEffort(\"\\ud83e\\u1234\") = %q, want %q", result, "\uFFFD\u1234")
 		}
 	})
 
@@ -2227,5 +2240,5 @@ func TestObjectMarshalToRawKey(t *testing.T) {
 
 func TestUnescapeStringBestEffortInvalidSurrogatePairHex(t *testing.T) {
 	// High surrogate \ud83e followed by \u with invalid hex digits
-	testUnescapeStringBestEffort(t, `\ud83e\uzzzz`, `\ud83e\uzzzz`)
+	testUnescapeStringBestEffort(t, `\ud83e\uzzzz`, "\uFFFD\\uzzzz")
 }

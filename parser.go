@@ -447,24 +447,20 @@ func unescapeStringBestEffort(a arena.Arena, s string) string {
 				break
 			}
 
-			// Surrogate.
+			// Surrogate. Like encoding/json, a lone or mismatched surrogate
+			// becomes U+FFFD and the input after it is kept.
 			// See https://en.wikipedia.org/wiki/Universal_Character_Set_characters#Surrogates
-			if len(s) < 6 || s[0] != '\\' || s[1] != 'u' {
-				b = append(b, "\\u"...)
-				b = append(b, xs...)
-				break
+			r := utf8.RuneError
+			if len(s) >= 6 && s[0] == '\\' && s[1] == 'u' {
+				if x1, err := strconv.ParseUint(s[2:6], 16, 16); err == nil {
+					if r = utf16.DecodeRune(rune(x), rune(x1)); r != utf8.RuneError {
+						s = s[6:]
+					}
+				}
 			}
-			x1, err := strconv.ParseUint(s[2:6], 16, 16)
-			if err != nil {
-				b = append(b, "\\u"...)
-				b = append(b, xs...)
-				break
-			}
-			r := utf16.DecodeRune(rune(x), rune(x1))
 			var buf [utf8.UTFMax]byte
 			rn := utf8.EncodeRune(buf[:], r)
 			b = append(b, buf[:rn]...)
-			s = s[6:]
 		default:
 			// Unknown escape sequence. Just store it unchanged.
 			b = append(b, '\\', ch)

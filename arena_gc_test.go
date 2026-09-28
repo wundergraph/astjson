@@ -1371,7 +1371,7 @@ func TestArenaGCSafety_UnescapeAllBranches(t *testing.T) {
 		"quote":          "a\"b",
 		"unicode":        "ABC",
 		"surrogate":      "😀",
-		"lone_surrogate": "\\uD800X",
+		"lone_surrogate": "\uFFFDX",
 		"unknown_esc":    "\\x",
 		"mixed":          "a\tb\nc\\dA",
 	}
@@ -1409,7 +1409,7 @@ func TestArenaGCSafety_UnescapeAllBranches(t *testing.T) {
 
 // TestArenaGCSafety_UnescapeNoHeapAlloc checks that unescaping into an arena
 // never reallocates its pre-sized buffer: the new buffer would live on the GC
-// heap, referenced only from arena memory. Inputs 3 to 5 keep their length,
+// heap, referenced only from arena memory. Inputs 4 and 5 keep their length,
 // the tightest fit.
 func TestArenaGCSafety_UnescapeNoHeapAlloc(t *testing.T) {
 	a := arena.NewMonotonicArena()
