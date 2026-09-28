@@ -1407,6 +1407,25 @@ func TestArenaGCSafety_UnescapeAllBranches(t *testing.T) {
 	}
 }
 
+// TestArenaGCSafety_UnescapeNoHeapAlloc checks that unescaping into an arena
+// never reallocates its pre-sized buffer: the new buffer would live on the GC
+// heap, referenced only from arena memory. Inputs 3 to 5 keep their length,
+// the tightest fit.
+func TestArenaGCSafety_UnescapeNoHeapAlloc(t *testing.T) {
+	a := arena.NewMonotonicArena()
+	for _, s := range []string{`a\\b\/c\b\f\n\r\t\"`, `\u0041\uD83D\uDE00`, `\uD800X`, `\u12`, `\x`, `x\`} {
+		want := unescapeStringBestEffort(nil, s)
+		var got string
+		allocs := testing.AllocsPerRun(10, func() {
+			a.Reset()
+			got = unescapeStringBestEffort(a, s)
+		})
+		if allocs != 0 || got != want {
+			t.Fatalf("unescapeStringBestEffort(%q) = %q with %v heap allocs; want %q with 0", s, got, allocs, want)
+		}
+	}
+}
+
 func TestArenaGCSafety_MergeValues_ScalarReplacement(t *testing.T) {
 	old := debug.SetGCPercent(1)
 	defer debug.SetGCPercent(old)

@@ -306,11 +306,14 @@ func parseObject(a arena.Arena, s string, depth int) (*Value, string, error) {
 		if len(s) == 0 || s[0] != '"' {
 			return nil, s, fmt.Errorf(`cannot find opening '"" for object key`)
 		}
-		kv.k, s, err = parseRawKey(s[1:])
+		var hasBackslash bool
+		kv.k, s, hasBackslash, err = parseRawKey(s[1:])
 		if err != nil {
 			return nil, s, fmt.Errorf("cannot parse object key: %s", err)
 		}
-		kv.k = unescapeStringBestEffort(a, kv.k)
+		if hasBackslash {
+			kv.k = unescapeStringBestEffort(a, kv.k)
+		}
 		kv.keyUnescaped = true
 		s = skipWS(s)
 		if len(s) == 0 || s[0] != ':' {
@@ -394,12 +397,13 @@ func unescapeStringBestEffort(a arena.Arena, s string) string {
 		return s
 	}
 
-	// Estimate capacity to avoid frequent reallocations
+	// Unescaping never makes a string longer, so the appends below never
+	// outgrow this capacity and b stays in the arena allocation.
 	estimatedCap := len(s) + 4
 	b := arena.AllocateSlice[byte](a, 0, estimatedCap)
 
 	// Add the initial part before the first escape
-	b = arena.SliceAppend(a, b, []byte(s[:n])...)
+	b = append(b, s[:n]...)
 	s = s[n+1:]
 
 	for len(s) > 0 {
@@ -407,70 +411,70 @@ func unescapeStringBestEffort(a arena.Arena, s string) string {
 		s = s[1:]
 		switch ch {
 		case '"':
-			b = arena.SliceAppend(a, b, '"')
+			b = append(b, '"')
 		case '\\':
-			b = arena.SliceAppend(a, b, '\\')
+			b = append(b, '\\')
 		case '/':
-			b = arena.SliceAppend(a, b, '/')
+			b = append(b, '/')
 		case 'b':
-			b = arena.SliceAppend(a, b, '\b')
+			b = append(b, '\b')
 		case 'f':
-			b = arena.SliceAppend(a, b, '\f')
+			b = append(b, '\f')
 		case 'n':
-			b = arena.SliceAppend(a, b, '\n')
+			b = append(b, '\n')
 		case 'r':
-			b = arena.SliceAppend(a, b, '\r')
+			b = append(b, '\r')
 		case 't':
-			b = arena.SliceAppend(a, b, '\t')
+			b = append(b, '\t')
 		case 'u':
 			if len(s) < 4 {
 				// Too short escape sequence. Just store it unchanged.
-				b = arena.SliceAppend(a, b, []byte("\\u")...)
+				b = append(b, "\\u"...)
 				break
 			}
 			xs := s[:4]
 			x, err := strconv.ParseUint(xs, 16, 16)
 			if err != nil {
 				// Invalid escape sequence. Just store it unchanged.
-				b = arena.SliceAppend(a, b, []byte("\\u")...)
+				b = append(b, "\\u"...)
 				break
 			}
 			s = s[4:]
 			if !utf16.IsSurrogate(rune(x)) {
 				var buf [utf8.UTFMax]byte
 				n := utf8.EncodeRune(buf[:], rune(x))
-				b = arena.SliceAppend(a, b, buf[:n]...)
+				b = append(b, buf[:n]...)
 				break
 			}
 
 			// Surrogate.
 			// See https://en.wikipedia.org/wiki/Universal_Character_Set_characters#Surrogates
 			if len(s) < 6 || s[0] != '\\' || s[1] != 'u' {
-				b = arena.SliceAppend(a, b, []byte("\\u")...)
-				b = arena.SliceAppend(a, b, []byte(xs)...)
+				b = append(b, "\\u"...)
+				b = append(b, xs...)
 				break
 			}
 			x1, err := strconv.ParseUint(s[2:6], 16, 16)
 			if err != nil {
-				b = arena.SliceAppend(a, b, []byte("\\u")...)
-				b = arena.SliceAppend(a, b, []byte(xs)...)
+				b = append(b, "\\u"...)
+				b = append(b, xs...)
 				break
 			}
 			r := utf16.DecodeRune(rune(x), rune(x1))
 			var buf [utf8.UTFMax]byte
 			rn := utf8.EncodeRune(buf[:], r)
-			b = arena.SliceAppend(a, b, buf[:rn]...)
+			b = append(b, buf[:rn]...)
 			s = s[6:]
 		default:
 			// Unknown escape sequence. Just store it unchanged.
-			b = arena.SliceAppend(a, b, '\\', ch)
+			b = append(b, '\\', ch)
 		}
 		n = strings.IndexByte(s, '\\')
 		if n < 0 {
-			b = arena.SliceAppend(a, b, []byte(s)...)
+			b = append(b, s...)
 			break
 		}
-		b = arena.SliceAppend(a, b, []byte(s[:n])...)
+		b = append(b, s[:n]...)
 		s = s[n+1:]
 	}
 	return b2s(b)
@@ -478,18 +482,20 @@ func unescapeStringBestEffort(a arena.Arena, s string) string {
 
 // parseRawKey is similar to parseRawString, but is optimized
 // for small-sized keys without escape sequences.
-func parseRawKey(s string) (string, string, error) {
+// hasBackslash reports whether the key may need unescaping.
+func parseRawKey(s string) (key, tail string, hasBackslash bool, err error) {
 	for i := 0; i < len(s); i++ {
 		if s[i] == '"' {
 			// Fast path.
-			return s[:i], s[i+1:], nil
+			return s[:i], s[i+1:], false, nil
 		}
 		if s[i] == '\\' {
 			// Slow path.
-			return parseRawString(s)
+			key, tail, err = parseRawString(s)
+			return key, tail, true, err
 		}
 	}
-	return s, "", fmt.Errorf(`missing closing '"'`)
+	return s, "", false, fmt.Errorf(`missing closing '"'`)
 }
 
 func parseRawString(s string) (string, string, error) {

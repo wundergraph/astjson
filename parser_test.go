@@ -120,9 +120,12 @@ func TestParseRawString(t *testing.T) {
 			}
 
 			// parseRawKey results must be identical to parseRawString.
-			rs, tail, err = parseRawKey(s[1:])
+			rs, tail, hasBackslash, err := parseRawKey(s[1:])
 			if err != nil {
 				t.Fatalf("unexpected error on parseRawKey: %s", err)
+			}
+			if want := strings.Contains(rs, `\`); hasBackslash != want {
+				t.Fatalf("unexpected hasBackslash on parseRawKey; got %v; want %v", hasBackslash, want)
 			}
 			if rs != expectedRS {
 				t.Fatalf("unexpected string on parseRawKey; got %q; want %q", rs, expectedRS)
@@ -162,7 +165,7 @@ func TestParseRawString(t *testing.T) {
 			}
 
 			// parseRawKey results must be identical to parseRawString.
-			_, tail, err = parseRawKey(s[1:])
+			_, tail, _, err = parseRawKey(s[1:])
 			if err == nil {
 				t.Fatalf("expecting non-nil error on parseRawKey")
 			}
