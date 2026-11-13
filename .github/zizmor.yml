@@ -1,0 +1,15 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # These publish immutable releases, so a full version tag can never
+        # be moved to other code. Everything else is pinned to a commit SHA.
+        # zizmor cannot check immutability; the "Check that action tags are
+        # immutable" step in ci.yml does.
+        actions/setup-go: ref-pin
+        golangci/golangci-lint-action: ref-pin
+        zizmorcore/zizmor-action: ref-pin
+        "*": hash-pin
+  dependabot-cooldown:
+    config:
+      days: 10
