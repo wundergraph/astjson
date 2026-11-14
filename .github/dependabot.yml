@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # Actions are pinned to exact versions in the workflows; this keeps the pins
+  # current with one grouped pull request a week.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 10
+    groups:
+      github-actions:
+        patterns:
+          - "*"
