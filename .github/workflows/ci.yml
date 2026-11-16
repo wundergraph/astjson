@@ -41,14 +41,18 @@ jobs:
         env:
           GOTOOLCHAIN: local
         run: |
-          oldest=$(sed -n 's/^go 1\.\([0-9]*\).*/\1/p' go.mod)
-          stable=$(go env GOVERSION | sed -n 's/^go1\.\([0-9]*\).*/\1/p')
-          if [ -z "$oldest" ] || [ -z "$stable" ] || [ "$oldest" -gt "$stable" ]; then
-            echo "cannot build a Go version range from go.mod (1.$oldest) to stable (1.$stable)" >&2
-            exit 1
-          fi
-          versions=$(seq "$oldest" "$stable" | jq -Rnc '[inputs | "1.\(.)"]')
-          echo "versions=$versions" | tee -a "$GITHUB_OUTPUT"
+          awk -v stable="$(go env GOVERSION)" '
+            $1 == "go" { split($2, min, ".") }
+            END {
+              split(stable, max, ".")
+              if (min[1] != 1 || max[1] != "go1" || min[2] !~ /^[0-9]+$/ ||
+                  max[2] !~ /^[0-9]+$/ || min[2] > max[2]) exit 1
+              printf "versions=["
+              for (v = min[2]; v <= max[2]; v++)
+                printf "%s\"1.%d\"", (v == min[2] ? "" : ","), v
+              print "]"
+            }
+          ' go.mod >> "$GITHUB_OUTPUT"
 
   test:
     needs: go-versions
