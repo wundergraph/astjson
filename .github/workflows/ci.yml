@@ -17,8 +17,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
-# Actions are referenced by full version tag when the release is immutable
-# (the tag can never be moved), and by commit SHA otherwise.
+# Actions use readable version tags; actions.lock pins the code that runs,
+# including transitive action dependencies.
 jobs:
   go-versions:
     name: Go versions
@@ -27,7 +27,7 @@ jobs:
     outputs:
       versions: ${{ steps.versions.outputs.versions }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-go@v7.0.0
@@ -65,7 +65,7 @@ jobs:
         run: |
           git config --global core.autocrlf false
           git config --global core.eol lf
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Set up Go ${{ matrix.go }}
@@ -82,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-go@v7.0.0
@@ -100,7 +100,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-go@v7.0.0
@@ -108,31 +108,12 @@ jobs:
           go-version: stable
       - name: actionlint
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-      # zizmor cannot tell whether a tag is immutable, so this does: an action
-      # is referenced either by commit SHA or by the tag of an immutable release.
-      - name: Check that action tags are immutable
+      - name: Verify action lockfile
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          status=0
-          uses=$(grep -rhoE '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[^[:space:]#]+' .github/workflows \
-            | sed -E 's/.*uses:[[:space:]]*//' | tr -d "\"'" | sort -u)
-          for use in $uses; do
-            case "$use" in ./*|docker://*) continue ;; esac
-            ref=${use##*@}
-            if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
-              continue
-            fi
-            repo=$(echo "${use%@*}" | cut -d/ -f1-2)
-            immutable=$(gh api "repos/$repo/releases/tags/$ref" --jq .immutable 2>/dev/null) || immutable="no such release"
-            if [ "$immutable" = "true" ]; then
-              echo "$use: immutable release"
-            else
-              echo "::error::$use is neither a commit SHA nor the tag of an immutable release (immutable: $immutable)"
-              status=1
-            fi
-          done
-          exit "$status"
+          gh extension install github/gh-actions-lock --pin v0.4.1
+          gh actions-lock --verify
       - name: zizmor
         uses: zizmorcore/zizmor-action@v0.8.1
         with:
