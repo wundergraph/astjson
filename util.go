@@ -59,16 +59,13 @@ func AppendToArray(a arena.Arena, array, value *Value) {
 }
 
 // SetValue sets value at the nested key path within v. Intermediate object
-// nodes are created on the arena as needed when they don't exist. An empty
-// path does nothing.
+// nodes are created on the arena as needed when they don't exist. The path
+// must have at least one element.
 //
 // Object keys created along the path are copied onto the arena when a is
 // non-nil, ensuring GC safety. The same arena/heap mixing rules as
 // [Object.Set] apply to the value argument.
 func SetValue(a arena.Arena, v *Value, value *Value, path ...string) {
-	if len(path) == 0 {
-		return
-	}
 	for i := 0; i < len(path)-1; i++ {
 		parent := v
 		v = v.Get(path[i])

@@ -60,13 +60,3 @@ func TestSetNullCreatesMissingPath(t *testing.T) {
 
 	assert.Equal(t, `{"a":1,"b":{"c":null}}`, string(v.MarshalTo(nil)))
 }
-
-func TestSetValueAndSetNullIgnoreEmptyPath(t *testing.T) {
-	t.Parallel()
-
-	v := MustParse(`{"a":1}`)
-	SetNull(nil, v)
-	SetValue(nil, v, MustParse(`2`))
-
-	assert.Equal(t, `{"a":1}`, string(v.MarshalTo(nil)))
-}
