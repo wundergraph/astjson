@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # Update action versions and their lockfile entries together, in one grouped
+  # pull request a week.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 10
+    groups:
+      github-actions:
+        patterns:
+          - "*"
