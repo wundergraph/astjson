@@ -32,9 +32,6 @@ func BenchmarkSharedValues(b *testing.B) {
 				SetNull(a, record, "seller")
 			}
 		}},
-		// One constructor call per field, as a caller converting another format
-		// to JSON makes. Two of the six fields are booleans, and every fourth
-		// record has its nested object nulled.
 		{"BuildRecords", func(a arena.Arena) {
 			sink = ArrayValue(a)
 			for i := range 100 {
@@ -45,9 +42,7 @@ func BenchmarkSharedValues(b *testing.B) {
 				record.Set(a, "active", TrueValue(a))
 				record.Set(a, "verified", FalseValue(a))
 				record.Set(a, "seller", ObjectValue(a))
-				if i%4 == 0 {
-					SetNull(a, record, "seller")
-				}
+				SetNull(a, record, "seller")
 				sink.SetArrayItem(a, i, record)
 			}
 		}},
