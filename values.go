@@ -81,21 +81,15 @@ func NumberValue(a arena.Arena, s string) *Value {
 	return v
 }
 
-// TrueValue returns the JSON true Value.
-//
-// It returns the same shared Value the parser returns for a parsed `true`, so
-// it allocates nothing and a is unused. The shared Value is a package-level
-// variable the GC always sees, which makes it safe to store in both heap and
-// arena containers.
-func TrueValue(_ arena.Arena) *Value {
+// TrueValue returns the parser's shared JSON true value.
+// It allocates nothing and is safe to store in heap and arena containers.
+func TrueValue() *Value {
 	return valueTrue
 }
 
-// FalseValue returns the JSON false Value.
-//
-// It returns the same shared Value the parser returns for a parsed `false`, so
-// it allocates nothing and a is unused. See [TrueValue].
-func FalseValue(_ arena.Arena) *Value {
+// FalseValue returns the parser's shared JSON false value.
+// It allocates nothing and is safe to store in heap and arena containers.
+func FalseValue() *Value {
 	return valueFalse
 }
 

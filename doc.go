@@ -94,11 +94,10 @@ Safe pattern using DeepCopy:
 
 # Value Constructors
 
-Use [StringValue], [IntValue], [FloatValue], [NumberValue], [TrueValue],
-[FalseValue], [ObjectValue], and [ArrayValue] to create new values. These
-accept an [arena.Arena] parameter: pass nil for heap allocation or a non-nil
-arena for arena allocation. All string data is automatically copied onto the
-arena when a non-nil arena is provided.
+[TrueValue] and [FalseValue] return shared boolean values and take no arguments.
+[StringValue], [StringValueBytes], [IntValue], [FloatValue], [NumberValue],
+[ObjectValue], and [ArrayValue] take an [arena.Arena]. Pass nil for heap
+allocation or an arena to allocate the value and its string data there.
 
 # Concurrency
 

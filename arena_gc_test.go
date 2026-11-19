@@ -138,8 +138,10 @@ func TestArenaGCSafety_TrueValue(t *testing.T) {
 
 	for i := 0; i < gcTestIterations; i++ {
 		a := arena.NewMonotonicArena()
-		v := TrueValue(a)
+		arr := ArrayValue(a)
+		arr.SetArrayItem(a, 0, TrueValue())
 		forceGC()
+		v := arr.GetArray()[0]
 		if v.Type() != TypeTrue {
 			t.Fatalf("iteration %d: expected TypeTrue, got %s", i, v.Type())
 		}
@@ -156,8 +158,10 @@ func TestArenaGCSafety_FalseValue(t *testing.T) {
 
 	for i := 0; i < gcTestIterations; i++ {
 		a := arena.NewMonotonicArena()
-		v := FalseValue(a)
+		arr := ArrayValue(a)
+		arr.SetArrayItem(a, 0, FalseValue())
 		forceGC()
+		v := arr.GetArray()[0]
 		if v.Type() != TypeFalse {
 			t.Fatalf("iteration %d: expected TypeFalse, got %s", i, v.Type())
 		}

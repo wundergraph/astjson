@@ -7,13 +7,22 @@ import (
 )
 
 // BenchmarkSharedValues measures TrueValue, FalseValue and SetNull, alone and
-// as part of building a document. Each case handles 100 items per iteration
-// and runs without an arena and with one.
+// as part of building a document. Each case handles 100 items per iteration.
 func BenchmarkSharedValues(b *testing.B) {
 	parsed := make([]*Value, 100)
 	for i := range parsed {
 		parsed[i] = MustParse(`{"id":1,"seller":{"name":"a"}}`)
 	}
+
+	b.Run("BooleanValues", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			for range 50 {
+				TrueValue()
+				FalseValue()
+			}
+		}
+	})
 
 	var sink *Value
 
@@ -21,12 +30,6 @@ func BenchmarkSharedValues(b *testing.B) {
 		name string
 		run  func(a arena.Arena)
 	}{
-		{"BooleanValues", func(a arena.Arena) {
-			for range 50 {
-				sink = TrueValue(a)
-				sink = FalseValue(a)
-			}
-		}},
 		{"SetNull", func(a arena.Arena) {
 			for _, record := range parsed {
 				SetNull(a, record, "seller")
@@ -39,8 +42,8 @@ func BenchmarkSharedValues(b *testing.B) {
 				record.Set(a, "id", IntValue(a, i))
 				record.Set(a, "name", StringValue(a, "record"))
 				record.Set(a, "price", FloatValue(a, 9.5))
-				record.Set(a, "active", TrueValue(a))
-				record.Set(a, "verified", FalseValue(a))
+				record.Set(a, "active", TrueValue())
+				record.Set(a, "verified", FalseValue())
 				record.Set(a, "seller", ObjectValue(a))
 				SetNull(a, record, "seller")
 				sink.SetArrayItem(a, i, record)
