@@ -78,12 +78,14 @@ func SetValue(a arena.Arena, v *Value, value *Value, path ...string) {
 	v.Set(a, path[len(path)-1], value)
 }
 
-// SetNull sets a null value at the nested key path within v. The null Value is
-// allocated on the arena when a is non-nil. See [SetValue] for path behavior.
+// SetNull sets a null value at the nested key path within v. See [SetValue]
+// for path behavior.
+//
+// It stores the shared [NullValue] rather than a new null, so it allocates
+// nothing when the path already exists in v. Intermediate objects and new
+// entries for a path that does not exist are still allocated with a.
 func SetNull(a arena.Arena, v *Value, path ...string) {
-	null := arena.Allocate[Value](a)
-	null.t = TypeNull
-	SetValue(a, v, null, path...)
+	SetValue(a, v, valueNull, path...)
 }
 
 // ValueIsNonNull reports whether v is non-nil and not TypeNull.

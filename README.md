@@ -94,7 +94,8 @@ the reference to it immediately after parsing.
 
 ### Creating values
 
-Value constructors accept an `arena.Arena` — pass `nil` for heap allocation:
+`TrueValue()` and `FalseValue()` return shared booleans. The other constructors
+accept an `arena.Arena`. Pass `nil` for heap allocation.
 
 ```go
 a := arena.NewMonotonicArena()
@@ -102,7 +103,7 @@ a := arena.NewMonotonicArena()
 s := astjson.StringValue(a, "hello")      // arena-allocated string
 n := astjson.IntValue(a, 42)              // arena-allocated number
 f := astjson.FloatValue(a, 3.14)          // arena-allocated float
-b := astjson.TrueValue(a)                 // arena-allocated true
+b := astjson.TrueValue()                  // shared true
 obj := astjson.ObjectValue(a)             // empty object
 arr := astjson.ArrayValue(a)              // empty array
 
@@ -110,7 +111,7 @@ arr := astjson.ArrayValue(a)              // empty array
 heapStr := astjson.StringValue(nil, "heap")
 ```
 
-Also available: `FalseValue`, `NumberValue` (raw numeric string), `StringValueBytes`.
+Also available: `NumberValue` (raw numeric string), `StringValueBytes`.
 
 ### Modifying JSON
 

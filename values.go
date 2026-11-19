@@ -81,24 +81,16 @@ func NumberValue(a arena.Arena, s string) *Value {
 	return v
 }
 
-// TrueValue creates a JSON true Value.
-//
-// When a is non-nil, the Value struct is allocated on the arena.
-// When a is nil, it is heap-allocated.
-func TrueValue(a arena.Arena) *Value {
-	v := arena.Allocate[Value](a)
-	v.t = TypeTrue
-	return v
+// TrueValue returns the parser's shared JSON true value.
+// It allocates nothing and is safe to store in heap and arena containers.
+func TrueValue() *Value {
+	return valueTrue
 }
 
-// FalseValue creates a JSON false Value.
-//
-// When a is non-nil, the Value struct is allocated on the arena.
-// When a is nil, it is heap-allocated.
-func FalseValue(a arena.Arena) *Value {
-	v := arena.Allocate[Value](a)
-	v.t = TypeFalse
-	return v
+// FalseValue returns the parser's shared JSON false value.
+// It allocates nothing and is safe to store in heap and arena containers.
+func FalseValue() *Value {
+	return valueFalse
 }
 
 // ObjectValue creates an empty JSON object Value.
